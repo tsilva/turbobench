@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "turbobench"
+version = "1.0.0"
+description = "Correctness-gated, provider-neutral reinforcement-learning environment benchmarks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tiago Silva" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "numpy>=1.26,<3",
+  "packaging>=24,<27",
+  "pillow>=10.4,<13",
+]
+
+[project.scripts]
+turbobench = "turbobench.cli:main"
+
+[project.entry-points."turbobench.providers"]
+# Third-party packages register ProviderDefinition factories in this group.
+
+[dependency-groups]
+dev = [
+  "pytest>=8,<10",
+  "ruff>=0.15,<0.16",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/turbobench"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/logo.png",
+  "/architecture.png",
+  "/LICENSE",
+  "/SPECS.md",
+  "/AGENTS.md",
+  "/pyproject.toml",
+  "/uv.lock",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "acceptance: real provider tests requiring local assets and native builds",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.uv]
+exclude-newer = "7 days"
+constraint-dependencies = [
+  "mistralai!=2.4.6",
+  "guardrails-ai!=0.10.1",
+]
