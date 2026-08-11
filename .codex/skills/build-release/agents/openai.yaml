@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Release"
+  short_description: "Build, audit, publish, and verify releases"
+  default_prompt: "Use $build-release to build, publish, and verify a turbobench release."
