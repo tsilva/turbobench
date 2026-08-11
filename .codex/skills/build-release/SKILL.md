@@ -60,13 +60,16 @@ bump. Never layer an automatic version edit onto existing user changes.
 4. Install and run the locked source gates:
 
 ```bash
+command -v ffmpeg
 uv sync --frozen --group dev
 uv run --frozen ruff check .
 uv run --frozen pytest -m "not acceptance"
 ```
 
-Do not require provider assets for a release candidate. The `acceptance` suite
-is host- and asset-dependent and remains outside the portable release gate.
+Require FFmpeg because the portable media end-to-end test exercises MP4 and GIF
+generation. Do not require provider assets for a release candidate. The
+`acceptance` suite is host- and asset-dependent and remains outside the portable
+release gate.
 
 5. Confirm the selected version remains unused on PyPI:
 
