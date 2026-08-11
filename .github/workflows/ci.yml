@@ -25,6 +25,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+      - if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - run: uv sync --frozen --group dev --python ${{ matrix.python }}
       - run: uv run --frozen ruff check .
       - run: uv run --frozen pytest -m "not acceptance"
