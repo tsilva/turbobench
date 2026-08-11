@@ -18,6 +18,7 @@ def test_fake_provider_end_to_end_bundle_has_separate_statuses(fake_bundle: Path
     assert verification["passed"]
     result = read_json(fake_bundle / "result.json")
     assert result["schema"] == "turbobench.result/v1"
+    assert result["tool"]["distribution"] == "turbobench-cli"
     assert not result["validity"]["passed"]
     assert result["claim"]["status"] == "diagnostic"
     assert result["comparison"]["outcome"] == "right_faster"
@@ -28,6 +29,7 @@ def test_fake_provider_end_to_end_bundle_has_separate_statuses(fake_bundle: Path
 
 def test_manifest_id_and_all_required_bundle_entries(fake_bundle: Path) -> None:
     manifest = read_json(fake_bundle / "manifest.json")
+    assert manifest["tool"]["distribution"] == "turbobench-cli"
     assert manifest["bundle_id"] == canonical_json_hash({**manifest, "bundle_id": ""})
     paths = {item["path"] for item in manifest["artifacts"]}
     assert {"result.json", "profile.toml", "resolved-lock.json", "report.md", "chart.svg"} <= paths

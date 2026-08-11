@@ -12,7 +12,7 @@ from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
-from turbobench import RESULT_SCHEMA, __version__
+from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
 from turbobench.assets import discover_assets
 from turbobench.bundle import finalize_manifest, verify_bundle
 from turbobench.correctness import compare_replays, compare_traces
@@ -356,7 +356,7 @@ def run_comparison_resolved(
         "assets": asset_record,
         "commands": [" ".join(redact(list(options.command)))] if options.command else [],
         "tool": {
-            "distribution": "turbobench",
+            "distribution": DISTRIBUTION_NAME,
             "version": __version__,
             "source_sha256": harness_source_hash(),
         },

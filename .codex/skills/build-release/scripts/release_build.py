@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select versions, build, audit, and verify turbobench releases."""
+"""Select versions, build, audit, and verify turbobench-cli releases."""
 
 from __future__ import annotations
 
@@ -20,9 +20,10 @@ from email.parser import BytesParser
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-PACKAGE_NAME = "turbobench"
+PYPI_PROJECT = "turbobench-cli"
+DIST_NAME = "turbobench_cli"
 IMPORT_NAME = "turbobench"
-TAG_PREFIX = "turbobench-v"
+TAG_PREFIX = "turbobench-cli-v"
 VERSION_PATTERN = re.compile(
     r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
     r"(?:(?P<pre>a|b|rc)(?P<pre_number>[0-9]+)"
@@ -71,10 +72,10 @@ def lock_version() -> str:
     matches = [
         package.get("version")
         for package in packages
-        if isinstance(package, dict) and package.get("name") == PACKAGE_NAME
+        if isinstance(package, dict) and package.get("name") == PYPI_PROJECT
     ]
     if len(matches) != 1 or not isinstance(matches[0], str):
-        raise SystemExit(f"expected one {PACKAGE_NAME!r} package in uv.lock")
+        raise SystemExit(f"expected one {PYPI_PROJECT!r} package in uv.lock")
     return matches[0]
 
 
@@ -109,7 +110,7 @@ def check_version(args: argparse.Namespace) -> None:
         "uv.lock": lock_version(),
     }
     wanted = {
-        "project.name": PACKAGE_NAME,
+        "project.name": PYPI_PROJECT,
         "pyproject.toml": expected,
         "src/turbobench/__init__.py": expected,
         "uv.lock": expected,
@@ -121,12 +122,12 @@ def check_version(args: argparse.Namespace) -> None:
             for key, value in failures.items()
         )
         raise SystemExit(f"release metadata mismatch for {expected}: {details}")
-    print(json.dumps({"package": PACKAGE_NAME, "version": expected}, indent=2))
+    print(json.dumps({"package": PYPI_PROJECT, "version": expected}, indent=2))
 
 
 def fetch_pypi(version: str | None = None) -> dict[str, object]:
     suffix = f"/{version}" if version is not None else ""
-    url = f"https://pypi.org/pypi/{PACKAGE_NAME}{suffix}/json"
+    url = f"https://pypi.org/pypi/{PYPI_PROJECT}{suffix}/json"
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
             data = json.load(response)
@@ -199,12 +200,12 @@ def replace_init_version(path: Path, current: str, target: str) -> None:
 def replace_lock_version(path: Path, current: str, target: str) -> None:
     text = path.read_text(encoding="utf-8")
     pattern = re.compile(
-        rf'(?m)(^\[\[package\]\]\nname = "{PACKAGE_NAME}"\nversion = ")'
+        rf'(?m)(^\[\[package\]\]\nname = "{PYPI_PROJECT}"\nversion = ")'
         rf'{re.escape(current)}(")'
     )
     updated, count = pattern.subn(rf"\g<1>{target}\g<2>", text, count=1)
     if count != 1:
-        raise SystemExit(f"could not update {PACKAGE_NAME!r} version in {path}")
+        raise SystemExit(f"could not update {PYPI_PROJECT!r} version in {path}")
     path.write_text(updated, encoding="utf-8")
 
 
@@ -233,7 +234,7 @@ def prepare_version(args: argparse.Namespace) -> None:
         validate_version(args.to)
         target = args.to
         if releases.get(target):
-            raise SystemExit(f"{PACKAGE_NAME}=={target} already exists on PyPI")
+            raise SystemExit(f"{PYPI_PROJECT}=={target} already exists on PyPI")
         if target in tags:
             raise SystemExit(f"release tag already exists: {TAG_PREFIX}{target}")
     else:
@@ -243,7 +244,7 @@ def prepare_version(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
-                "package": PACKAGE_NAME,
+                "package": PYPI_PROJECT,
                 "current_version": current,
                 "selected_version": target,
                 "bumped": target != current,
@@ -258,8 +259,8 @@ def check_pypi(args: argparse.Namespace) -> None:
     validate_version(args.version)
     releases = pypi_releases()
     if releases.get(args.version):
-        raise SystemExit(f"{PACKAGE_NAME}=={args.version} already exists on PyPI")
-    print(f"{PACKAGE_NAME}=={args.version} is unused on PyPI")
+        raise SystemExit(f"{PYPI_PROJECT}=={args.version} already exists on PyPI")
+    print(f"{PYPI_PROJECT}=={args.version} is unused on PyPI")
 
 
 def sha256(path: Path) -> str:
@@ -294,11 +295,11 @@ def wheel_audit(wheel: Path, version: str) -> dict[str, object]:
             else ""
         )
     checks = {
-        "expected_filename": wheel.name == f"{PACKAGE_NAME}-{version}-py3-none-any.whl",
+        "expected_filename": wheel.name == f"{DIST_NAME}-{version}-py3-none-any.whl",
         "one_metadata_file": len(metadata_names) == 1,
         "one_wheel_file": len(wheel_names) == 1,
         "one_entry_points_file": len(entry_point_names) == 1,
-        "metadata_name": metadata is not None and metadata.get("Name") == PACKAGE_NAME,
+        "metadata_name": metadata is not None and metadata.get("Name") == PYPI_PROJECT,
         "metadata_version": metadata is not None and metadata.get("Version") == version,
         "universal_python_wheel": (
             wheel_metadata is not None and wheel_metadata.get("Tag") == "py3-none-any"
@@ -325,7 +326,7 @@ def wheel_audit(wheel: Path, version: str) -> dict[str, object]:
 def sdist_audit(sdist: Path, version: str) -> dict[str, object]:
     with tarfile.open(sdist, "r:gz") as archive:
         names = archive.getnames()
-    root = f"{PACKAGE_NAME}-{version}"
+    root = f"{DIST_NAME}-{version}"
     checks = {
         "expected_filename": sdist.name == f"{root}.tar.gz",
         "has_pyproject": f"{root}/pyproject.toml" in names,
@@ -363,7 +364,7 @@ import turbobench
 assert turbobench.__version__ == sys.argv[2]
 assert turbobench.RESULT_SCHEMA == "turbobench.result/v1"
 distribution = next(PathDistribution.discover(path=[str(wheel)]))
-assert distribution.metadata["Name"] == "turbobench"
+assert distribution.metadata["Name"] == "turbobench-cli"
 assert distribution.version == sys.argv[2]
 entry_points = {entry.name: entry.value for entry in distribution.entry_points}
 assert entry_points["turbobench"] == "turbobench.cli:main"
@@ -426,8 +427,8 @@ def audit(args: argparse.Namespace) -> None:
 
 def expected_filenames(version: str) -> set[str]:
     return {
-        f"{PACKAGE_NAME}-{version}-py3-none-any.whl",
-        f"{PACKAGE_NAME}-{version}.tar.gz",
+        f"{DIST_NAME}-{version}-py3-none-any.whl",
+        f"{DIST_NAME}-{version}.tar.gz",
     }
 
 
@@ -449,7 +450,7 @@ def wait_pypi(args: argparse.Namespace) -> None:
                 json.dumps(
                     {
                         "url": (
-                            f"https://pypi.org/project/{PACKAGE_NAME}/{args.version}/"
+                            f"https://pypi.org/project/{PYPI_PROJECT}/{args.version}/"
                         ),
                         "version": args.version,
                         "files": sorted(found),
@@ -459,14 +460,14 @@ def wait_pypi(args: argparse.Namespace) -> None:
             )
             return
         print(
-            f"waiting for {PACKAGE_NAME}=={args.version} files "
+            f"waiting for {PYPI_PROJECT}=={args.version} files "
             f"({attempt + 1}/{args.attempts})",
             flush=True,
         )
         if attempt + 1 < args.attempts:
             time.sleep(args.interval)
     raise SystemExit(
-        f"{PACKAGE_NAME}=={args.version} did not expose the complete file set on PyPI"
+        f"{PYPI_PROJECT}=={args.version} did not expose the complete file set on PyPI"
     )
 
 

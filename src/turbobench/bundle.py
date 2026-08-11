@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from turbobench import RESULT_SCHEMA, __version__
+from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
 from turbobench.profiles import get_profile, profile_hash, profile_toml
 from turbobench.stats import paired_statistics, reciprocal_statistics
 from turbobench.util import (
@@ -61,7 +61,7 @@ def finalize_manifest(bundle: Path) -> dict[str, Any]:
     manifest = {
         "schema": "turbobench.manifest/v1",
         "bundle_id": "",
-        "tool": {"distribution": "turbobench", "version": __version__},
+        "tool": {"distribution": DISTRIBUTION_NAME, "version": __version__},
         "artifacts": artifacts,
     }
     manifest["bundle_id"] = canonical_json_hash({**manifest, "bundle_id": ""})

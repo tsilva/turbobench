@@ -1,6 +1,6 @@
 ---
 name: build-release
-description: Build, audit, publish, monitor, or verify turbobench Python releases. Use when the user invokes /build-release or $build-release; asks to build release artifacts or a local candidate; requests a specific version; asks to cut, tag, publish, or monitor a PyPI release; or wants to confirm that an exact turbobench version is live.
+description: Build, audit, publish, monitor, or verify turbobench-cli Python releases. Use when the user invokes /build-release or $build-release; asks to build release artifacts or a local candidate; requests a specific version; asks to cut, tag, publish, or monitor the turbobench-cli PyPI project; or wants to confirm that an exact version is live.
 ---
 
 # Build Release
@@ -9,6 +9,10 @@ Use the repository-owned release path and preserve the distinction between a
 local candidate and external publication. A local candidate is reversible;
 pushing a release tag publishes externally when the trusted-publishing workflow
 is installed.
+
+Publish to the PyPI project `turbobench-cli`. Keep the installed command and
+Python import named `turbobench`; normalized distribution files use the
+`turbobench_cli-<version>` prefix.
 
 Treat an unqualified `/build-release` or `$build-release` invocation as a
 request to complete the publication flow. Use the local-candidate flow only
@@ -23,7 +27,7 @@ suffix. Accept an exact valid version selected by the user, including an
 explicit `.postN`, but never add a post-release suffix automatically.
 
 Keep the version identical in `pyproject.toml`,
-`src/turbobench/__init__.py`, and the root `turbobench` entry in `uv.lock`.
+`src/turbobench/__init__.py`, and the root `turbobench-cli` entry in `uv.lock`.
 
 ## Build a local candidate
 
@@ -47,7 +51,8 @@ python3 .codex/skills/build-release/scripts/release_build.py prepare-version
 
 On a clean worktree, add `--write` to apply an automatic bump when the checked-in
 version is already tagged or published. For an exact user-requested version,
-add `--to <version>`. The helper checks local `turbobench-v*` tags and PyPI and
+add `--to <version>`. The helper checks local `turbobench-cli-v*` tags and the
+`turbobench-cli` PyPI project and
 transactionally updates all three version locations. If the worktree is dirty,
 do not add `--write`; proceed only when the reported pending version requires no
 bump. Never layer an automatic version edit onto existing user changes.
@@ -99,16 +104,17 @@ Require all of the following before tagging or publishing:
 - a clean worktree on the current branch;
 - the branch synchronized with its configured upstream;
 - consistent version metadata for the selected version;
-- an unused PyPI version and unused `turbobench-v<version>` tag;
+- an unused `turbobench-cli` PyPI version and unused
+  `turbobench-cli-v<version>` tag;
 - a passing local candidate from the exact commit; and
 - a checked-in `.github/workflows/release.yml` that builds and audits the same
   wheel and sdist, publishes through PyPI Trusted Publishing, and creates a
   GitHub Release only for a pushed release tag.
 
-This repository may not yet contain the trusted-publishing workflow. If it is
-absent or no longer matches this contract, stop before tagging or pushing and
-report that publication infrastructure must be added or repaired. Do not
-replace it with a local upload.
+Require the workflow's PyPI job to use the GitHub `pypi` environment and OIDC
+trusted publishing for the `turbobench-cli` project. If the workflow is absent
+or no longer matches this contract, stop before tagging or pushing and repair
+the repository-owned path. Do not replace it with a local upload.
 
 Start clean, fetch the configured remote and tags, confirm synchronization, run
 `prepare-version --write`, and complete all source and candidate gates. If
@@ -120,8 +126,8 @@ Create an annotated tag only after every requirement passes, then atomically
 push the current branch and tag:
 
 ```bash
-git tag -a turbobench-v<version> -m "Release turbobench-v<version>"
-git push --atomic <remote> HEAD turbobench-v<version>
+git tag -a turbobench-cli-v<version> -m "Release turbobench-cli-v<version>"
+git push --atomic <remote> HEAD turbobench-cli-v<version>
 ```
 
 Do not create or switch branches, move an existing release tag, manually upload
@@ -133,7 +139,7 @@ publishing is the only normal publication path.
 Resolve the tag commit and monitor only its matching release workflow:
 
 ```bash
-release_sha="$(git rev-list -n 1 turbobench-v<version>)"
+release_sha="$(git rev-list -n 1 turbobench-cli-v<version>)"
 gh run list --workflow release.yml --commit "$release_sha" --limit 5 \
   --json databaseId,status,conclusion,event,headBranch,headSha,displayTitle,url
 gh run watch <run-id> --exit-status
@@ -151,18 +157,19 @@ matching GitHub Release:
 ```bash
 python3 .codex/skills/build-release/scripts/release_build.py \
   wait-pypi --version <version>
-gh release view turbobench-v<version> --json url,tagName,assets
+gh release view turbobench-cli-v<version> --json url,tagName,assets
 ```
 
 A successful workflow is not the final success signal. Do not report completion
-until PyPI contains both `turbobench-<version>-py3-none-any.whl` and
-`turbobench-<version>.tar.gz`, and the GitHub Release exists for the exact tag.
+until PyPI contains both `turbobench_cli-<version>-py3-none-any.whl` and
+`turbobench_cli-<version>.tar.gz`, and the GitHub Release exists for the exact
+tag.
 
 ## Final response
 
 For a local candidate, lead with its artifact directory and report both files,
 digests, version, and completed gates. For publication, lead with
-`https://pypi.org/project/turbobench/<version>/` and report the tag, pushed
+`https://pypi.org/project/turbobench-cli/<version>/` and report the tag, pushed
 commit, workflow URL and conclusion, GitHub Release URL, and both distribution
 filenames. On failure, report the exact command or gate and the next safe
 recovery action.

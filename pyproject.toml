@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "turbobench"
+name = "turbobench-cli"
 version = "1.0.0"
 description = "Correctness-gated, provider-neutral reinforcement-learning environment benchmarks"
 readme = "README.md"
@@ -36,6 +36,11 @@ turbobench = "turbobench.cli:main"
 
 [project.entry-points."turbobench.providers"]
 # Third-party packages register ProviderDefinition factories in this group.
+
+[project.urls]
+Homepage = "https://github.com/tsilva/turbobench"
+Issues = "https://github.com/tsilva/turbobench/issues"
+Repository = "https://github.com/tsilva/turbobench"
 
 [dependency-groups]
 dev = [

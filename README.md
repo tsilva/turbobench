@@ -16,6 +16,12 @@ clearly watermarked.
 
 ## Install
 
+Install the published CLI from PyPI with `uv tool install turbobench-cli` or
+`pip install turbobench-cli`. The installed command and Python import remain
+`turbobench`.
+
+For a development checkout:
+
 ```bash
 git clone https://github.com/tsilva/turbobench.git
 cd turbobench
