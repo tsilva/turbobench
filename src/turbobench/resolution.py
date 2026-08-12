@@ -220,14 +220,10 @@ def resolve_pair(
             selected = next((item for item in candidates if item.version == reference.value), None)
             if selected is None:
                 raise ValueError(f"{reference.provider}@{reference.value} is unavailable or incompatible")
-            reasons: tuple[str, ...] = ()
-            if current - selected.uploaded < SEVEN_DAYS:
-                reasons = ("exact version is inside the seven-day quarantine",)
             resolved[side] = _release_to_resolved(
                 definition,
                 selected,
                 python_minor=python_minor,
-                diagnostic_reasons=reasons,
             )
     latest_sides = [side for side, reference in refs.items() if reference.selector == "latest"]
     eligible_by_side = {

@@ -69,7 +69,7 @@ def test_release_filtering_surfaces_quarantine_yanked_prerelease_and_python() ->
     assert ("1.4.0", "python-3.14-incompatible") in reasons
 
 
-def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_diagnostic() -> None:
+def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_canonical() -> None:
     profile = get_profile("vizdoom/basic-v1")
     common = _metadata(
         {
@@ -101,7 +101,15 @@ def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_diagnostic() -
         now=NOW,
         metadata={"vizdoom-turbo": turbo, "vizdoom": common},
     )
-    assert exact.left.diagnostic_reasons and exact.right.diagnostic_reasons
+    assert not exact.left.diagnostic_reasons
+    assert not exact.right.diagnostic_reasons
+    reasons = {
+        (item["version"], item["reason"])
+        for items in exact.excluded.values()
+        for item in items
+    }
+    assert ("1.3.1.post1", "seven-day-quarantine") in reasons
+    assert ("1.3.1", "seven-day-quarantine") in reasons
 
 
 def test_latest_solves_newest_compatible_lineage_tuple_and_surfaces_newer() -> None:
