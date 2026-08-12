@@ -8,10 +8,20 @@ import pytest
 from turbobench.cli import build_parser, main
 
 
-def test_cli_exposes_v1_commands_and_no_publish_command(capsys) -> None:
+def test_cli_exposes_benchmark_and_semantic_oracle_commands(capsys) -> None:
     parser = build_parser()
     help_text = parser.format_help()
-    for command in ("doctor", "providers", "profiles", "compare", "verify", "report", "promo"):
+    for command in (
+        "doctor",
+        "providers",
+        "profiles",
+        "compare",
+        "oracle",
+        "verify",
+        "verify-oracle",
+        "report",
+        "promo",
+    ):
         assert command in help_text
     assert "publish" not in help_text
     assert main(["providers", "list"]) == 0

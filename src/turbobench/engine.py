@@ -481,6 +481,9 @@ def _trace(
     assets: dict[str, Any],
     *,
     side: str,
+    trace_ram: bool = False,
+    snapshot_prefix_steps: int = 0,
+    snapshot_suffix_steps: int = 0,
 ) -> dict[str, Any]:
     path = bundle / "raw" / f"shape-{shape}" / f"trace-{side}.json"
     if path.is_file():
@@ -490,6 +493,9 @@ def _trace(
         "operation": "trace",
         "actions": actions.tolist(),
         "action_stream_sha256": stream_hash,
+        "trace_ram": trace_ram,
+        "snapshot_prefix_steps": snapshot_prefix_steps,
+        "snapshot_suffix_steps": snapshot_suffix_steps,
     }
     response = invoke_runner(
         provider,

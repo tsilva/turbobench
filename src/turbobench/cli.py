@@ -15,6 +15,7 @@ from turbobench.bundle import verify_bundle
 from turbobench.engine import ComparisonOptions, generate_promo_for_bundle, run_comparison
 from turbobench.profiles import PROFILES, get_profile, profile_hash
 from turbobench.providers import load_providers, parse_provider_ref
+from turbobench.semantic_oracle import OracleOptions, run_oracle, verify_oracle_receipt
 from turbobench.system import host_record, prerequisites
 
 
@@ -50,8 +51,36 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--steps", type=int, help="diagnostic workload step override")
     compare.add_argument("--shapes", type=_shapes, help="diagnostic comma-separated shape override")
 
+    oracle = commands.add_parser(
+        "oracle",
+        help="run a ROM-backed bit-exact semantic comparison without benchmarking",
+    )
+    oracle.add_argument("profile")
+    oracle.add_argument("--left", required=True, metavar="PROVIDER_REF")
+    oracle.add_argument("--right", required=True, metavar="PROVIDER_REF")
+    oracle.add_argument("--output", type=Path)
+    oracle.add_argument("--allow-dirty", action="store_true")
+    oracle.add_argument("--python", default="3.14", dest="python_minor")
+    oracle.add_argument("--steps", type=int)
+    oracle.add_argument("--shapes", type=_shapes)
+    oracle.add_argument("--seed", type=int, default=123)
+
     verify = commands.add_parser("verify", help="verify bundle integrity and consistency")
     verify.add_argument("bundle", type=Path)
+
+    verify_oracle = commands.add_parser(
+        "verify-oracle", help="verify a portable semantic-oracle receipt"
+    )
+    verify_oracle.add_argument("receipt", type=Path)
+    verify_oracle.add_argument(
+        "--require-canonical",
+        action="store_true",
+        help="also require the full clean authority workload for a release gate",
+    )
+    verify_oracle.add_argument(
+        "--require-provider",
+        help="require this candidate provider to be present in the receipt",
+    )
 
     report = commands.add_parser("report", help="display the bundle's generated report")
     report.add_argument("bundle", type=Path)
@@ -87,8 +116,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "compare":
             return _compare(args, arguments)
+        if args.command == "oracle":
+            return _oracle(args, arguments)
         if args.command == "verify":
             result = verify_bundle(args.bundle)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if result["passed"] else 1
+        if args.command == "verify-oracle":
+            result = verify_oracle_receipt(
+                args.receipt,
+                require_canonical=args.require_canonical,
+                require_provider=args.require_provider,
+            )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["passed"] else 1
         if args.command == "report":
@@ -182,10 +221,51 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
     return 2 if args.promo and not result["promo"]["generated"] else 0
 
 
+def _oracle(args: argparse.Namespace, command: list[str]) -> int:
+    definitions = load_providers()
+    left = parse_provider_ref(args.left, definitions)
+    right = parse_provider_ref(args.right, definitions)
+    output = args.output or _default_oracle_output(args.profile)
+    receipt, result = run_oracle(
+        args.profile,
+        left,
+        right,
+        output,
+        OracleOptions(
+            allow_dirty=args.allow_dirty,
+            python_minor=args.python_minor,
+            steps=args.steps,
+            shapes=args.shapes,
+            seed=args.seed,
+            command=("turbobench", *command),
+            progress=_print_progress,
+        ),
+    )
+    print(
+        json.dumps(
+            {
+                "receipt": str(receipt),
+                "passed": result["passed"],
+                "authority": result["semantic_authority"],
+                "authority_present": result["authority_present"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result["passed"] else 1
+
+
 def _default_output(profile_id: str) -> Path:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     slug = profile_id.replace("/", "-")
     return Path("turbobench-results") / f"{stamp}-{slug}"
+
+
+def _default_oracle_output(profile_id: str) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    slug = profile_id.replace("/", "-")
+    return Path("turbobench-oracles") / f"{stamp}-{slug}"
 
 
 def _print_progress(message: str) -> None:

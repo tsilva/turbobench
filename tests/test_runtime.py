@@ -118,3 +118,46 @@ def test_clean_checkout_snapshot_preserves_provider_scripts_and_excludes_live_gi
     assert (destination / "vendor/dependency/header.hpp").read_text() == "// pinned submodule\n"
     assert not (destination / ".git").exists()
     assert not (destination / "vendor/dependency/.git").exists()
+
+
+def test_dirty_checkout_snapshot_overlays_git_visible_files_only(tmp_path: Path) -> None:
+    root = tmp_path / "provider"
+    root.mkdir()
+    (root / ".gitignore").write_text("CMakeCache.txt\nbuild/\n")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname="breakout-turbo-env"\nversion="1.0.0"\n'
+    )
+    (root / "tracked.py").write_text("before\n")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=root,
+        check=True,
+    )
+    (root / "tracked.py").write_text("after\n")
+    (root / "new.py").write_text("new\n")
+    (root / "CMakeCache.txt").write_text("host-specific\n")
+    (root / "build").mkdir()
+    (root / "build" / "extension.so").write_bytes(b"host binary")
+    resolved = resolve_checkout(
+        BUILTIN_PROVIDERS["breakout-turbo-env"],
+        root,
+        python_minor="3.14",
+        allow_dirty=True,
+    )
+    destination = tmp_path / "snapshot"
+    _snapshot_checkout(resolved, root, destination)
+    assert (destination / "tracked.py").read_text() == "after\n"
+    assert (destination / "new.py").read_text() == "new\n"
+    assert not (destination / "CMakeCache.txt").exists()
+    assert not (destination / "build").exists()

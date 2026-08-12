@@ -55,6 +55,7 @@ packages = ["src/turbobench"]
 include = [
   "/src",
   "/tests",
+  "/docs",
   "/README.md",
   "/logo.png",
   "/architecture.png",

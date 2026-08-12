@@ -83,6 +83,45 @@ PROFILES: dict[str, Profile] = {
         promo_steps=1_800,
         completion={"kind": "trajectory-end", "step": 1800},
     ),
+    "supermario/canonical-v2": Profile(
+        id="supermario/canonical-v2",
+        logical_environment="supermario",
+        game="SuperMarioBros-Nes-v0",
+        providers=("supermariobrosnes-turbo", "stable-retro-turbo", "stable-retro"),
+        shapes=(1, 4),
+        states=("Level1-1", "Level1-2", "Level1-3", "Level1-4"),
+        semantic_actions=("noop", "right", "right_b", "right_a"),
+        action_table=_MARIO_ACTION_TABLE,
+        info_integer=("levelHi", "levelLo", "lives", "score", "time", "scrolling", "xscrollHi", "xscrollLo"),
+        crop_top=32,
+        crop_mode="mask",
+        correctness_steps=256,
+        promo_kind="mario-imported-v1",
+        promo_steps=MARIO_PROMO_ACTION_COUNT,
+        completion={"kind": "info-change", "keys": ["levelHi", "levelLo"], "step": 1986},
+        asset_sha256=MARIO_ROM_SHA256,
+        semantic_authority="stable-retro",
+        semantic_authority_version="1.0.1",
+        native_transition_exact=True,
+    ),
+    "breakout/start-v2": Profile(
+        id="breakout/start-v2",
+        logical_environment="breakout",
+        game="Breakout-Atari2600-v0",
+        providers=("breakout-turbo-env", "stable-retro-turbo", "stable-retro"),
+        shapes=(1, 4),
+        states=("Start",),
+        semantic_actions=("noop", "fire", "right", "left"),
+        action_table=_BREAKOUT_ACTION_TABLE,
+        info_integer=("score", "lives"),
+        correctness_steps=256,
+        promo_kind="breakout-deterministic-v1",
+        promo_steps=1_800,
+        completion={"kind": "trajectory-end", "step": 1800},
+        semantic_authority="stable-retro",
+        semantic_authority_version="1.0.1",
+        native_transition_exact=True,
+    ),
     "vizdoom/basic-v1": Profile(
         id="vizdoom/basic-v1",
         logical_environment="vizdoom-basic",
@@ -124,6 +163,30 @@ def benchmark_actions(profile: Profile, shape: int, steps: int | None = None) ->
     action_count = len(profile.semantic_actions)
     # Varied by both lane and step, deterministic, and never generated in a timed section.
     return ((step_index * 17 + lane_index * 7 + (step_index // 4) * 3) % action_count).astype(np.int16)
+
+
+def oracle_actions(profile: Profile, shape: int, steps: int | None = None, *, seed: int = 123) -> np.ndarray:
+    """Return a reproducible random semantic-action trace for fidelity testing."""
+
+    if shape <= 0:
+        raise ValueError("shape must be positive")
+    count = profile.oracle_steps if steps is None else steps
+    if count <= 0:
+        raise ValueError("steps must be positive")
+    generator = np.random.default_rng(seed)
+    actions = generator.integers(
+        0,
+        len(profile.semantic_actions),
+        size=(count, shape),
+        dtype=np.int16,
+    )
+    # Exercise every shared action immediately in every lane before the random
+    # suffix. This makes short diagnostic runs useful without changing the
+    # seeded long-trace contract.
+    directed = min(count, len(profile.semantic_actions))
+    for step in range(directed):
+        actions[step] = (step + np.arange(shape, dtype=np.int16)) % len(profile.semantic_actions)
+    return actions
 
 
 def action_stream_hash(profile: Profile, actions: np.ndarray) -> str:
@@ -211,6 +274,20 @@ def profile_payload(profile: Profile) -> dict[str, Any]:
         },
         "signals": {"integer": list(profile.info_integer), "float": list(profile.info_float)},
         "asset_sha256": profile.asset_sha256,
+        "oracle": {
+            "semantic_authority": profile.semantic_authority,
+            "semantic_authority_version": profile.semantic_authority_version,
+            "native_transition_exact": profile.native_transition_exact,
+            "shapes": list(profile.oracle_shapes),
+            "steps": profile.oracle_steps,
+            "snapshot_prefix_steps": profile.snapshot_prefix_steps,
+            "snapshot_suffix_steps": profile.snapshot_suffix_steps,
+            "allowed_representation_conversion": (
+                "rgb888-expanded-to-rgb565-native-code"
+                if profile.logical_environment == "supermario"
+                else "identity"
+            ),
+        },
     }
 
 
@@ -226,7 +303,7 @@ def profile_toml(profile: Profile) -> str:
         return "[" + ", ".join(quoted(value) for value in values) + "]"
 
     lines = [
-        f"schema = {quoted('turbobench.profile/v1')}",
+        f"schema = {quoted('turbobench.profile/v2' if profile.native_transition_exact else 'turbobench.profile/v1')}",
         f"id = {quoted(profile.id)}",
         f"logical_environment = {quoted(profile.logical_environment)}",
         f"game = {quoted(profile.game)}",
@@ -261,6 +338,26 @@ def profile_toml(profile: Profile) -> str:
         f"integer = {strings(profile.info_integer)}",
         f"float = {strings(profile.info_float)}",
     ]
+    if profile.native_transition_exact:
+        lines.extend(
+            (
+                "",
+                "[oracle]",
+                f"semantic_authority = {quoted(profile.semantic_authority or '')}",
+                f"semantic_authority_version = {quoted(profile.semantic_authority_version or '')}",
+                "native_transition_exact = true",
+                f"shapes = [{', '.join(map(str, profile.oracle_shapes))}]",
+                f"steps = {profile.oracle_steps}",
+                f"snapshot_prefix_steps = {profile.snapshot_prefix_steps}",
+                f"snapshot_suffix_steps = {profile.snapshot_suffix_steps}",
+                "allowed_representation_conversion = "
+                + quoted(
+                    "rgb888-expanded-to-rgb565-native-code"
+                    if profile.logical_environment == "supermario"
+                    else "identity"
+                ),
+            )
+        )
     if profile.asset_sha256:
         lines.extend(("", "[asset]", f"sha256 = {quoted(profile.asset_sha256)}"))
     return "\n".join(lines) + "\n"

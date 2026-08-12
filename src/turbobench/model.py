@@ -102,6 +102,13 @@ class Profile:
     promo_steps: int = 1_200
     completion: dict[str, Any] = field(default_factory=dict)
     asset_sha256: str | None = None
+    semantic_authority: str | None = None
+    semantic_authority_version: str | None = None
+    native_transition_exact: bool = False
+    oracle_shapes: tuple[int, ...] = (1, 4)
+    oracle_steps: int = 4_096
+    snapshot_prefix_steps: int = 128
+    snapshot_suffix_steps: int = 128
 
     def compatible(self, left: str, right: str) -> bool:
         return left != right and left in self.providers and right in self.providers

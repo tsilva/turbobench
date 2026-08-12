@@ -21,7 +21,13 @@ def compare_traces(left: dict[str, Any], right: dict[str, Any], profile: Profile
         left.get("action_stream_sha256"),
         right.get("action_stream_sha256"),
     )
-    for field in ("observation_sha256", "raw_frame_sha256", "raw_frame_shapes"):
+    for field in (
+        "observation_sha256",
+        "raw_frame_sha256",
+        "raw_frame_shapes",
+        "ram_sha256",
+        "ram_shapes",
+    ):
         _same(mismatches, f"initial.{field}", left.get("initial", {}).get(field), right.get("initial", {}).get(field))
     _infos(
         mismatches,
@@ -42,20 +48,60 @@ def compare_traces(left: dict[str, Any], right: dict[str, Any], profile: Profile
             "terminations",
             "truncations",
             "reset_lanes",
+            "ram_sha256",
+            "ram_shapes",
         ):
             _same(mismatches, f"{prefix}.{field}", left_step.get(field), right_step.get(field))
-        _float_list(mismatches, f"{prefix}.rewards", left_step.get("rewards", []), right_step.get("rewards", []))
+        _float_list(
+            mismatches,
+            f"{prefix}.rewards",
+            left_step.get("rewards", []),
+            right_step.get("rewards", []),
+            exact=profile.native_transition_exact,
+        )
         _infos(mismatches, f"{prefix}.infos", left_step.get("infos", []), right_step.get("infos", []), profile)
     _same(mismatches, "reset_points", left.get("reset_points"), right.get("reset_points"))
     _same(mismatches, "completion_step", left.get("completion_step"), right.get("completion_step"))
+    _same(
+        mismatches,
+        "snapshot_continuation",
+        left.get("snapshot_continuation"),
+        right.get("snapshot_continuation"),
+    )
+    for side, trace in (("left", left), ("right", right)):
+        snapshot = trace.get("snapshot_continuation")
+        if snapshot is not None and not snapshot.get("replay_exact"):
+            mismatches.append(
+                {
+                    "field": f"snapshot_continuation.{side}.replay_exact",
+                    "left": snapshot.get("uninterrupted_sha256"),
+                    "right": snapshot.get("replayed_sha256"),
+                }
+            )
     gates = [
         Gate("exact policy observations", not _has(mismatches, "observation_sha256"), "all lane/step hashes"),
         Gate("exact raw RGB frames", not _has(mismatches, "raw_frame"), "all lane/step hashes and shapes"),
-        Gate("matched rewards", not _has(mismatches, "rewards"), f"absolute tolerance {FLOAT_TOLERANCE:g}"),
+        Gate(
+            "exact rewards" if profile.native_transition_exact else "matched rewards",
+            not _has(mismatches, "rewards"),
+            "bit-exact numeric values"
+            if profile.native_transition_exact
+            else f"absolute tolerance {FLOAT_TOLERANCE:g}",
+        ),
         Gate("matched terminations and truncations", not _has_any(mismatches, ("terminations", "truncations")), "exact"),
         Gate("matched resets", not _has_any(mismatches, ("reset_lanes", "reset_points")), "exact selective reset points"),
         Gate("matched completion", not _has(mismatches, "completion_step"), "exact completion step"),
         Gate("matched semantic infos", not _has(mismatches, ".infos"), "integer exact; declared float absolute tolerance"),
+        Gate(
+            "exact emulator RAM",
+            not _has(mismatches, "ram_"),
+            "all declared lane/step hashes and shapes",
+        ),
+        Gate(
+            "exact snapshot continuation",
+            not _has(mismatches, "snapshot_continuation"),
+            "uninterrupted suffix equals restore-and-replay suffix",
+        ),
         Gate("training-safe observations", _safe_ownership(left) and _safe_ownership(right), "owned or safe-view observations"),
     ]
     passed = not mismatches and all(gate.passed for gate in gates)
@@ -80,7 +126,13 @@ def compare_replays(left: dict[str, Any], right: dict[str, Any], profile: Profil
         prefix = f"transitions[{index}]"
         for field in ("observation_sha256", "raw_frame_sha256", "terminated", "truncated"):
             _same(mismatches, f"{prefix}.{field}", lhs.get(field), rhs.get(field))
-        _float_list(mismatches, f"{prefix}.reward", [lhs.get("reward")], [rhs.get("reward")])
+        _float_list(
+            mismatches,
+            f"{prefix}.reward",
+            [lhs.get("reward")],
+            [rhs.get("reward")],
+            exact=profile.native_transition_exact,
+        )
         _infos(mismatches, f"{prefix}.infos", [lhs.get("infos", {})], [rhs.get("infos", {})], profile)
     expected = profile.completion.get("step")
     if expected is not None and left.get("completion_step") != expected:
@@ -99,12 +151,25 @@ def _same(mismatches: list[dict[str, Any]], field: str, left: Any, right: Any) -
         mismatches.append({"field": field, "left": left, "right": right})
 
 
-def _float_list(mismatches: list[dict[str, Any]], field: str, left: list[Any], right: list[Any]) -> None:
+def _float_list(
+    mismatches: list[dict[str, Any]],
+    field: str,
+    left: list[Any],
+    right: list[Any],
+    *,
+    exact: bool = False,
+) -> None:
     if len(left) != len(right):
         mismatches.append({"field": field, "left": left, "right": right})
         return
     for index, (lhs, rhs) in enumerate(zip(left, right, strict=True)):
-        if not math.isclose(float(lhs), float(rhs), rel_tol=0.0, abs_tol=FLOAT_TOLERANCE):
+        if (
+            float(lhs) != float(rhs)
+            if exact
+            else not math.isclose(
+                float(lhs), float(rhs), rel_tol=0.0, abs_tol=FLOAT_TOLERANCE
+            )
+        ):
             mismatches.append({"field": f"{field}[{index}]", "left": lhs, "right": rhs})
 
 
@@ -126,7 +191,13 @@ def _infos(
             if key not in lhs or key not in rhs:
                 mismatches.append({"field": f"{field}[{lane}].{key}", "left": lhs.get(key), "right": rhs.get(key)})
             else:
-                _float_list(mismatches, f"{field}[{lane}].{key}", [lhs[key]], [rhs[key]])
+                _float_list(
+                    mismatches,
+                    f"{field}[{lane}].{key}",
+                    [lhs[key]],
+                    [rhs[key]],
+                    exact=profile.native_transition_exact,
+                )
 
 
 def _safe_ownership(trace: dict[str, Any]) -> bool:

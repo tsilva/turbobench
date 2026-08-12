@@ -295,12 +295,8 @@ def _snapshot_checkout(provider: ResolvedProvider, checkout: Path, destination: 
     root = checkout.expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     if provider.diagnostic_reasons and "dirty checkout override" in provider.diagnostic_reasons:
-        shutil.copytree(
-            root,
-            destination,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "build", "dist"),
-        )
+        _archive_git_tree(root, provider.commit or "HEAD", destination, "source")
+        _overlay_dirty_checkout(root, destination)
         return
     _archive_git_tree(root, provider.commit or "HEAD", destination, "source")
     submodules = subprocess.run(
@@ -336,6 +332,58 @@ def _snapshot_checkout(provider: ResolvedProvider, checkout: Path, destination: 
             destination / relative,
             "submodule-" + relative.as_posix().replace("/", "-"),
         )
+
+
+def _overlay_dirty_checkout(root: Path, destination: Path) -> None:
+    """Overlay only Git-visible dirty content on a clean commit archive.
+
+    Copying a dirty worktree wholesale also copies ignored CMake caches,
+    editable environments, and stale compiled extensions. Those artifacts are
+    neither part of the checkout identity nor portable to the isolated runtime
+    and can make a valid diagnostic checkout impossible to build.
+    """
+
+    commands = (
+        ["git", "diff", "--name-only", "-z", "HEAD"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+    )
+    relative_paths: set[Path] = set()
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                completed.stderr.decode(errors="replace").strip()
+                or "could not inspect dirty checkout"
+            )
+        relative_paths.update(
+            Path(os.fsdecode(raw))
+            for raw in completed.stdout.split(b"\0")
+            if raw
+        )
+    for relative in sorted(relative_paths):
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"unsafe dirty checkout path: {relative}")
+        source = root / relative
+        target = destination / relative
+        if not source.exists() and not source.is_symlink():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink(missing_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            target.unlink(missing_ok=True)
+            target.symlink_to(os.readlink(source))
+        elif source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source, target)
 
 
 def _archive_git_tree(root: Path, commit: str, destination: Path, label: str) -> None:

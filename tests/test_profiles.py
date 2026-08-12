@@ -13,6 +13,7 @@ from turbobench.profiles import (
     action_stream_hash,
     benchmark_actions,
     mario_promo_actions,
+    oracle_actions,
     profile_hash,
     profile_payload,
     profile_toml,
@@ -22,12 +23,12 @@ from turbobench.profiles import (
 
 
 def test_v1_profiles_are_immutable_and_complete() -> None:
-    assert tuple(PROFILES) == (
+    assert tuple(profile_id for profile_id in PROFILES if profile_id.endswith("-v1")) == (
         "supermario/canonical-v1",
         "breakout/start-v1",
         "vizdoom/basic-v1",
     )
-    for profile in PROFILES.values():
+    for profile in (profile for profile in PROFILES.values() if profile.id.endswith("-v1")):
         assert profile.shapes == (1, 16, 32)
         assert profile.frame_skip == 4
         assert profile.frame_stack == 4
@@ -43,6 +44,33 @@ def test_v1_profiles_are_immutable_and_complete() -> None:
         assert "[action_table]" in serialized
         assert profile_payload(profile)["benchmark"]["semantic_actions"]
         assert profile_payload(profile)["benchmark"]["action_table"]
+
+
+def test_v2_profiles_are_exact_stable_retro_oracles() -> None:
+    assert {profile_id for profile_id in PROFILES if profile_id.endswith("-v2")} == {
+        "supermario/canonical-v2",
+        "breakout/start-v2",
+    }
+    for profile_id in ("supermario/canonical-v2", "breakout/start-v2"):
+        profile = PROFILES[profile_id]
+        assert profile.semantic_authority == "stable-retro"
+        assert profile.native_transition_exact
+        assert profile.shapes == (1, 4)
+        assert profile.oracle_shapes == (1, 4)
+        assert profile.oracle_steps == 4_096
+        payload = profile_payload(profile)
+        assert payload["oracle"]["native_transition_exact"]
+        assert tomllib.loads(profile_toml(profile))["schema"] == "turbobench.profile/v2"
+
+
+def test_oracle_actions_are_seeded_random_with_directed_prefix() -> None:
+    profile = PROFILES["breakout/start-v2"]
+    first = oracle_actions(profile, 4, 64, seed=123)
+    second = oracle_actions(profile, 4, 64, seed=123)
+    np.testing.assert_array_equal(first, second)
+    assert not np.array_equal(first, oracle_actions(profile, 4, 64, seed=124))
+    assert first.shape == (64, 4)
+    assert set(first[:, 0]) == set(range(len(profile.semantic_actions)))
 
 
 def test_serialized_profile_binds_the_semantic_action_table() -> None:

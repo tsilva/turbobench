@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import os
+import shutil
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
@@ -26,7 +27,7 @@ import numpy as np
 
 from turbobench.model import Profile
 from turbobench.profiles import get_profile
-from turbobench.util import read_json, sha256_file, write_json
+from turbobench.util import canonical_json_hash, read_json, sha256_file, write_json
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,9 @@ class ScalarWorkerConfig:
     resize: tuple[int, int]
     info_keys: tuple[str, ...] = ()
     worker_index: int = 0
+    native_transition_exact: bool = False
+    rom_path: str | None = None
+    state_paths: tuple[tuple[str, str], ...] = ()
 
 
 _PADDLE_MEASURE_LOWER_BOUNDS = (
@@ -229,6 +233,8 @@ class ScalarPreprocessingEnv:
         self._channels = channels
         self._stack = np.empty((channels * config.frame_stack, *config.resize), dtype=np.uint8)
         self._raw_frame: np.ndarray | None = None
+        self._oracle_action_history: list[np.ndarray] = []
+        self._restoring_snapshot = False
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=self._stack.shape, dtype=np.uint8
         )
@@ -239,6 +245,7 @@ class ScalarPreprocessingEnv:
             BreakoutPaddleNormalizer()
             if config.provider == "stable-retro"
             and config.game.startswith("Breakout-Atari2600")
+            and not config.native_transition_exact
             else None
         )
 
@@ -252,6 +259,8 @@ class ScalarPreprocessingEnv:
         return self.env.get_wrapper_attr(name)
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        if not self._restoring_snapshot:
+            self._oracle_action_history.clear()
         if self._paddle_normalizer is not None:
             self._paddle_normalizer.reset()
         observation, info = self.env.reset(seed=seed, options=options)
@@ -290,6 +299,8 @@ class ScalarPreprocessingEnv:
         return self._stack.copy(), info
 
     def step(self, action: Any):
+        if not self._restoring_snapshot:
+            self._oracle_action_history.append(np.asarray(action).copy())
         total_reward = 0.0
         terminated = False
         truncated = False
@@ -344,6 +355,46 @@ class ScalarPreprocessingEnv:
             raise RuntimeError("render requested before reset")
         return self._raw_frame.copy()
 
+    def ram(self) -> np.ndarray:
+        getter = getattr(self.env.unwrapped, "get_ram", None)
+        if getter is None:
+            raise NotImplementedError("scalar provider does not expose emulator RAM")
+        return np.asarray(getter(), dtype=np.uint8).copy()
+
+    def capture_oracle_snapshot(
+        self,
+    ) -> tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
+        if self._raw_frame is None:
+            raise RuntimeError("cannot capture a snapshot before reset")
+        return (
+            tuple(action.copy() for action in self._oracle_action_history),
+            self._stack.copy(),
+            self._raw_frame.copy(),
+        )
+
+    def restore_oracle_snapshots(
+        self,
+        snapshots: Sequence[
+            tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]
+        ],
+    ) -> bool:
+        history, expected_stack, expected_raw = snapshots[self.config.worker_index]
+        self._restoring_snapshot = True
+        try:
+            self.reset()
+            for action in history:
+                self.step(action)
+        finally:
+            self._restoring_snapshot = False
+        self._oracle_action_history = [action.copy() for action in history]
+        if not np.array_equal(self._stack, expected_stack) or not np.array_equal(
+            self._raw_frame, expected_raw
+        ):
+            raise RuntimeError(
+                "authority reset-and-replay failed to reconstruct the snapshot point"
+            )
+        return True
+
     def close(self) -> None:
         try:
             self.env.close()
@@ -358,13 +409,19 @@ def _construct_scalar_env(
     worker_tempdir: tempfile.TemporaryDirectory[str] | None = None
     if config.provider == "stable-retro":
         retro = importlib.import_module("retro")
-        if config.integration_path:
+        if config.native_transition_exact:
+            worker_tempdir = _create_original_retro_integration(config, retro)
+            inttype = retro.data.Integrations.CUSTOM
+        elif config.integration_path:
             retro.data.add_custom_integration(config.integration_path)
+            inttype = retro.data.Integrations.ALL
+        else:
+            inttype = retro.data.Integrations.ALL
         env = retro.RetroEnv(
             game=config.game,
             state=config.state,
             use_restricted_actions=retro.Actions.ALL,
-            inttype=retro.data.Integrations.ALL,
+            inttype=inttype,
             render_mode="rgb_array",
         )
     elif config.provider == "vizdoom":
@@ -394,6 +451,40 @@ def _construct_scalar_env(
     else:
         raise ValueError(f"unsupported scalar provider {config.provider!r}")
     return env, worker_tempdir
+
+
+def _create_original_retro_integration(
+    config: ScalarWorkerConfig,
+    retro: Any,
+) -> tempfile.TemporaryDirectory[str]:
+    """Build a worker-local integration owned by the pinned Stable Retro wheel.
+
+    Only the verified ROM and public state fixtures are overlaid. data.json and
+    scenario.json always come from the installed authority package so ambient
+    RETRO_DATA_PATH content cannot alter the semantic oracle.
+    """
+
+    package_root = Path(retro.__file__).resolve().parent
+    source = package_root / "data" / "stable" / config.game
+    if not source.is_dir():
+        raise FileNotFoundError(
+            f"Stable Retro authority integration is missing {config.game!r}: {source}"
+        )
+    worker_tempdir = tempfile.TemporaryDirectory(prefix="turbobench-retro-authority-")
+    target_root = Path(worker_tempdir.name)
+    target = target_root / config.game
+    shutil.copytree(source, target)
+    if config.rom_path:
+        rom_path = Path(config.rom_path).resolve()
+        for packaged_rom in target.glob("rom.*"):
+            packaged_rom.unlink()
+        (target / f"rom{rom_path.suffix}").symlink_to(rom_path)
+    for state, raw_path in config.state_paths:
+        destination = target / f"{state}.state"
+        destination.unlink(missing_ok=True)
+        destination.symlink_to(Path(raw_path).resolve())
+    retro.data.add_custom_integration(str(target_root))
+    return worker_tempdir
 
 
 def _make_scalar_worker(config: ScalarWorkerConfig) -> ScalarPreprocessingEnv:
@@ -499,7 +590,12 @@ class Adapter:
                 raw = [self.env.render_lane(index) for index in range(self.num_envs)]
         else:
             raw = self.env.call("render")
-        frames = [_canonical_raw_rgb(frame, self.profile) for frame in raw]
+        frames = [
+            _semantic_raw_rgb(frame, self.profile)
+            if self.profile.native_transition_exact
+            else _canonical_raw_rgb(frame, self.profile)
+            for frame in raw
+        ]
         if self.profile.logical_environment == "vizdoom-basic":
             if self._render_cache is not None:
                 frames = [
@@ -514,6 +610,49 @@ class Adapter:
                         self._render_cache[lane] = frame.copy()
         return frames
 
+    def rams(self) -> list[np.ndarray]:
+        if self.native_discrete:
+            getter = getattr(self.env, "ram", None)
+            if getter is None:
+                raise NotImplementedError(
+                    f"{self.provider} does not expose lane-aligned emulator RAM"
+                )
+            values = np.asarray(getter(), dtype=np.uint8)
+        else:
+            values = self.env.call("ram")
+        if (
+            self.profile.native_transition_exact
+            and self.profile.logical_environment == "supermario"
+        ):
+            # Stable Retro exposes registered memory blocks in address order:
+            # the canonical 2 KiB CPU RAM followed by mapper work RAM.  The
+            # Mario fidelity contract is deliberately scoped to CPU RAM, which
+            # is also the public Turbo provider contract.
+            values = np.asarray(values, dtype=np.uint8)[:, :2048]
+        return [np.ascontiguousarray(value, dtype=np.uint8) for value in values]
+
+    def capture_snapshots(self) -> Any:
+        mask = np.ones(self.num_envs, dtype=np.bool_)
+        if self.native_discrete:
+            return self.env.capture_snapshots(mask)
+        return tuple(self.env.call("capture_oracle_snapshot"))
+
+    def restore_snapshots(self, snapshots: Any) -> None:
+        self._terminal_mask.fill(False)
+        self._render_cache = None
+        if self.native_discrete:
+            self.env.reset(
+                options={
+                    "reset_mask": np.ones(self.num_envs, dtype=np.bool_),
+                    "state_indices": np.full(self.num_envs, -1, dtype=np.int32),
+                    "snapshots": list(snapshots),
+                }
+            )
+        else:
+            restored = self.env.call("restore_oracle_snapshots", snapshots)
+            if not all(restored):
+                raise RuntimeError("scalar snapshot restoration was incomplete")
+
     def metadata(self) -> dict[str, Any]:
         observation_space = getattr(self.env, "single_observation_space", None)
         return {
@@ -525,31 +664,62 @@ class Adapter:
             "action_meanings": list(getattr(self.env, "action_meanings", ()) or ()),
             "buttons": list(self.buttons),
             "capabilities": _jsonable(dict(getattr(self.env, "capabilities", {}))),
+            "snapshot_strategy": (
+                "native-live-snapshot"
+                if self.native_discrete
+                else "authority-reset-and-action-replay"
+            ),
             "raw_render_normalization": (
-                "rgb565-high-bits"
+                "rgb565-native-code"
+                if self.profile.native_transition_exact
+                and self.profile.logical_environment == "supermario"
+                else "identity"
+                if self.profile.native_transition_exact
+                else "rgb565-high-bits"
                 if self.profile.logical_environment in {"supermario", "breakout"}
                 else "rgb8"
             ),
             "source_channel_order": (
-                "bgr"
-                if self.provider == "stable-retro"
-                and self.profile.logical_environment == "breakout"
-                else "rgb"
+                "rgb"
             ),
             "palette_normalization": (
                 "stella-legacy-to-canonical-v1"
                 if self.provider == "stable-retro"
                 and self.profile.logical_environment == "breakout"
+                and not self.profile.native_transition_exact
                 else "identity"
             ),
             "compatibility_normalization": (
                 "upstream-stella-reset-and-paddle-v1"
                 if self.provider == "stable-retro"
                 and self.profile.logical_environment == "breakout"
+                and not self.profile.native_transition_exact
                 else "vizdoom-last-valid-terminal-frame-v1"
                 if self.profile.logical_environment == "vizdoom-basic"
                 else "identity"
             ),
+            "semantic_authority": self.profile.semantic_authority,
+            "native_transition_exact": self.profile.native_transition_exact,
+            "allowed_representation_conversion": (
+                "rgb888-expanded-to-rgb565-native-code"
+                if self.profile.native_transition_exact
+                and self.profile.logical_environment == "supermario"
+                else "identity"
+            ),
+            "ram": {
+                "representation": (
+                    "nes-cpu-ram-0x0000-0x07ff"
+                    if self.profile.logical_environment == "supermario"
+                    and self.profile.native_transition_exact
+                    else "stable-retro-registered-block-order"
+                ),
+                "conversion": (
+                    "select-canonical-cpu-ram-address-range"
+                    if self.profile.logical_environment == "supermario"
+                    and self.profile.native_transition_exact
+                    else "identity"
+                ),
+            },
             "observation": {
                 "shape": list(getattr(observation_space, "shape", ())),
                 "dtype": str(getattr(observation_space, "dtype", "unknown")),
@@ -638,6 +808,21 @@ class FakeAdapter:
             frame[..., 2] = np.arange(96, dtype=np.uint8)[:, None]
             frames.append(frame)
         return frames
+
+    def rams(self) -> list[np.ndarray]:
+        return [
+            np.full(128, int(value), dtype=np.uint8)
+            for value in self._state
+        ]
+
+    def capture_snapshots(self) -> tuple[np.ndarray, int, bool]:
+        return self._state.copy(), self.step_index, self.in_promo
+
+    def restore_snapshots(self, snapshots: tuple[np.ndarray, int, bool]) -> None:
+        state, step_index, in_promo = snapshots
+        self._state = state.copy()
+        self.step_index = step_index
+        self.in_promo = in_promo
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -830,9 +1015,28 @@ def _canonical_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
     return np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
 
 
+def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
+    """Decode public renders to the emulator's lossless native pixel code.
+
+    The NES core is RGB565. Stable Retro expands those bits to RGB888 while
+    native vector providers may expose the bits in their high positions. The
+    discarded low bits are deterministic copies of native bits, not additional
+    image information. Atari public frames are already canonical RGB888.
+    """
+
+    value = normalize_rgb(frame)
+    if profile.logical_environment == "supermario":
+        return np.bitwise_and(
+            value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8)
+        )
+    return value
+
+
 def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     value = normalize_rgb(frame)
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
+        if config.native_transition_exact:
+            return value
         value = np.ascontiguousarray(value[..., ::-1])
         value = np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
         # Stable Retro 1.0.1's scalar Atari binding predates the corrected
@@ -911,11 +1115,16 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
         return Adapter(env, profile, provider, native_discrete=True)
     if provider == "stable-retro-turbo":
         module = importlib.import_module("stable_retro")
+        if profile.native_transition_exact:
+            common["state_catalog"] = [
+                assets.get("state_paths", {}).get(state, state)
+                for state in profile.states
+            ]
         env = module.RetroVecEnv(
             profile.game,
             rom_path=rom_path,
-            info=assets.get("info_schema_path"),
-            scenario=assets.get("scenario_path"),
+            info=None if profile.native_transition_exact else assets.get("info_schema_path"),
+            scenario=None if profile.native_transition_exact else assets.get("scenario_path"),
             **common,
         )
         return Adapter(env, profile, provider, native_discrete=True)
@@ -941,7 +1150,7 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
     assets = request.get("assets", {})
     overlay: tempfile.TemporaryDirectory[str] | None = None
     integration_path: str | None = None
-    if provider == "stable-retro":
+    if provider == "stable-retro" and not profile.native_transition_exact:
         overlay = _create_retro_overlay(profile, assets)
         integration_path = overlay.name
     configs = [
@@ -959,6 +1168,12 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
             resize=profile.resize,
             info_keys=profile.info_integer + profile.info_float,
             worker_index=lane,
+            native_transition_exact=profile.native_transition_exact,
+            rom_path=assets.get("rom_path"),
+            state_paths=tuple(
+                (str(state), str(path))
+                for state, path in dict(assets.get("state_paths", {})).items()
+            ),
         )
         for lane in range(shape)
     ]
@@ -1003,6 +1218,10 @@ def _frame_hashes(frames: Sequence[np.ndarray]) -> list[str]:
     return [hashlib.sha256(frame.tobytes()).hexdigest() for frame in frames]
 
 
+def _ram_hashes(rams: Sequence[np.ndarray]) -> list[str]:
+    return [hashlib.sha256(ram.tobytes()).hexdigest() for ram in rams]
+
+
 def _selected_infos(infos: Any, profile: Profile, shape: int) -> list[dict[str, int | float]]:
     result: list[dict[str, int | float]] = [{} for _ in range(shape)]
     if not isinstance(infos, Mapping):
@@ -1026,6 +1245,56 @@ def _selected_infos(infos: Any, profile: Profile, shape: int) -> list[dict[str, 
     return result
 
 
+def _trace_transition(
+    adapter: Adapter | FakeAdapter,
+    profile: Profile,
+    action: np.ndarray,
+    step: int,
+    *,
+    trace_ram: bool,
+) -> tuple[dict[str, Any], np.ndarray]:
+    observations, rewards, terminated, truncated, infos = adapter.step(action)
+    frames = adapter.render_frames()
+    done = np.logical_or(terminated, truncated)
+    record: dict[str, Any] = {
+        "step": step,
+        "observation_sha256": _array_hashes(observations),
+        "raw_frame_sha256": _frame_hashes(frames),
+        "rewards": [float(value) for value in np.asarray(rewards)],
+        "terminations": [bool(value) for value in np.asarray(terminated)],
+        "truncations": [bool(value) for value in np.asarray(truncated)],
+        "infos": _selected_infos(infos, profile, adapter.num_envs),
+        "reset_lanes": np.flatnonzero(done).astype(int).tolist(),
+    }
+    if trace_ram:
+        rams = adapter.rams()
+        record["ram_sha256"] = _ram_hashes(rams)
+        record["ram_shapes"] = [list(ram.shape) for ram in rams]
+    return record, done
+
+
+def _snapshot_mismatches(
+    expected: Sequence[Mapping[str, Any]], replayed: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for index, (left, right) in enumerate(
+        zip(expected, replayed, strict=False), start=1
+    ):
+        for field in sorted(set(left) | set(right)):
+            if left.get(field) != right.get(field):
+                mismatches.append(
+                    {
+                        "suffix_step": index,
+                        "field": field,
+                        "uninterrupted": left.get(field),
+                        "replayed": right.get(field),
+                    }
+                )
+                if len(mismatches) == 20:
+                    return mismatches
+    return mismatches
+
+
 def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
     adapter = _create_adapter(request, profile)
     try:
@@ -1035,37 +1304,79 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
         prepared = [adapter.benchmark_action(row) for row in actions]
         trace: list[dict[str, Any]] = []
         reset_points: list[list[int]] = []
+        trace_ram = bool(request.get("trace_ram"))
+        snapshot_prefix = int(request.get("snapshot_prefix_steps", 0))
+        snapshot_suffix = int(request.get("snapshot_suffix_steps", 0))
+        if snapshot_prefix or snapshot_suffix:
+            if snapshot_prefix <= 0 or snapshot_suffix <= 0:
+                raise ValueError("snapshot prefix and suffix must both be positive")
+            if snapshot_prefix + snapshot_suffix > len(prepared):
+                raise ValueError("snapshot continuation exceeds the action trace")
+        snapshots: Any = None
         initial = {
             "observation_sha256": _array_hashes(observations),
             "raw_frame_sha256": _frame_hashes(frames),
             "raw_frame_shapes": [list(frame.shape) for frame in frames],
             "infos": _selected_infos(reset_infos, profile, adapter.num_envs),
         }
+        if trace_ram:
+            rams = adapter.rams()
+            initial["ram_sha256"] = _ram_hashes(rams)
+            initial["ram_shapes"] = [list(ram.shape) for ram in rams]
         for step, action in enumerate(prepared, start=1):
-            observations, rewards, terminated, truncated, infos = adapter.step(action)
-            frames = adapter.render_frames()
-            done = np.logical_or(terminated, truncated)
-            reset_lanes = np.flatnonzero(done).astype(int).tolist()
-            trace.append(
-                {
-                    "step": step,
-                    "observation_sha256": _array_hashes(observations),
-                    "raw_frame_sha256": _frame_hashes(frames),
-                    "rewards": [float(value) for value in np.asarray(rewards)],
-                    "terminations": [bool(value) for value in np.asarray(terminated)],
-                    "truncations": [bool(value) for value in np.asarray(truncated)],
-                    "infos": _selected_infos(infos, profile, adapter.num_envs),
-                    "reset_lanes": reset_lanes,
-                }
+            record, done = _trace_transition(
+                adapter,
+                profile,
+                action,
+                step,
+                trace_ram=trace_ram,
             )
+            trace.append(record)
+            reset_lanes = record["reset_lanes"]
             if reset_lanes:
                 adapter.selective_reset(done)
                 # Refresh the correctness-only raw-frame cache after a lane
                 # reset. Benchmark rollouts never render or encode frames.
                 adapter.render_frames()
                 reset_points.append([step, *reset_lanes])
-        return {
-            "schema": "turbobench.trace/v1",
+            if step == snapshot_prefix:
+                snapshots = adapter.capture_snapshots()
+
+        snapshot_continuation = None
+        if snapshots is not None:
+            expected = trace[snapshot_prefix : snapshot_prefix + snapshot_suffix]
+            adapter.restore_snapshots(snapshots)
+            replayed: list[dict[str, Any]] = []
+            for offset, action in enumerate(
+                prepared[snapshot_prefix : snapshot_prefix + snapshot_suffix],
+                start=snapshot_prefix + 1,
+            ):
+                record, done = _trace_transition(
+                    adapter,
+                    profile,
+                    action,
+                    offset,
+                    trace_ram=trace_ram,
+                )
+                replayed.append(record)
+                if record["reset_lanes"]:
+                    adapter.selective_reset(done)
+                    adapter.render_frames()
+            snapshot_continuation = {
+                "prefix_steps": snapshot_prefix,
+                "suffix_steps": snapshot_suffix,
+                "uninterrupted_sha256": canonical_json_hash(expected),
+                "replayed_sha256": canonical_json_hash(replayed),
+                "replay_exact": expected == replayed,
+                "first_mismatches": _snapshot_mismatches(expected, replayed),
+            }
+
+        result = {
+            "schema": (
+                "turbobench.semantic-trace/v2"
+                if profile.native_transition_exact
+                else "turbobench.trace/v1"
+            ),
             "provider": request["provider"],
             "profile": profile.id,
             "shape": adapter.num_envs,
@@ -1076,6 +1387,9 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
             "completion_step": _completion_step(trace, profile.completion),
             "environment": adapter.metadata(),
         }
+        if snapshot_continuation is not None:
+            result["snapshot_continuation"] = snapshot_continuation
+        return result
     finally:
         adapter.close()
 

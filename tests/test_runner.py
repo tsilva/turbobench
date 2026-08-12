@@ -24,6 +24,7 @@ from turbobench.runner import (
     _canonical_raw_rgb,
     _create_retro_overlay,
     _normalize_scalar_rgb,
+    _semantic_raw_rgb,
     execute,
     fractional_area_resize,
     integer_area_resize,
@@ -52,6 +53,16 @@ def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> Non
         )
 
 
+def test_exact_mario_raw_frames_decode_to_lossless_native_rgb565_codes() -> None:
+    profile = get_profile("supermario/canonical-v2")
+    native = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
+    expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
+    np.testing.assert_array_equal(
+        _semantic_raw_rgb(native, profile),
+        _semantic_raw_rgb(expanded, profile),
+    )
+
+
 def test_upstream_atari_scalar_pixels_are_normalized_from_bgr() -> None:
     config = ScalarWorkerConfig(
         provider="stable-retro",
@@ -70,6 +81,28 @@ def test_upstream_atari_scalar_pixels_are_normalized_from_bgr() -> None:
     np.testing.assert_array_equal(
         _normalize_scalar_rgb(bgr, config),
         np.asarray([[[200, 72, 72], [136, 136, 136]]], dtype=np.uint8),
+    )
+
+
+def test_exact_upstream_atari_preserves_public_rgb_bytes() -> None:
+    config = ScalarWorkerConfig(
+        provider="stable-retro",
+        game="Breakout-Atari2600-v0",
+        state="Start",
+        integration_path=None,
+        frame_skip=4,
+        frame_stack=4,
+        crop_top=0,
+        crop_bottom=0,
+        crop_mode="remove",
+        grayscale=True,
+        resize=(84, 84),
+        native_transition_exact=True,
+    )
+    rgb = np.asarray([[[205, 72, 72], [139, 141, 139]]], dtype=np.uint8)
+    np.testing.assert_array_equal(
+        _normalize_scalar_rgb(rgb, config),
+        rgb,
     )
 
 
@@ -341,6 +374,16 @@ def test_direct_trace_correctness_detects_every_contract_class() -> None:
         changed = deepcopy(right)
         mutate(changed)
         assert not compare_traces(left, changed, profile)["passed"]
+
+
+def test_exact_profile_rejects_reward_delta_inside_v1_tolerance() -> None:
+    profile = get_profile("breakout/start-v2")
+    left = execute(_trace_request(profile.id, shape=1))
+    right = deepcopy(left)
+    right["steps"][0]["rewards"][0] += 5e-7
+    result = compare_traces(left, right, profile)
+    assert not result["passed"]
+    assert result["first_mismatches"][0]["field"] == "steps[1].rewards[0]"
 
 
 def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> None:
