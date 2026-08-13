@@ -73,9 +73,9 @@ def finalize_manifest(bundle: Path) -> dict[str, Any]:
         payload["bundle_id"] = manifest["bundle_id"]
         write_json(media_manifest, payload)
         # Canonical media hashing excludes only this circular reference.
-        expected = next(
-            item for item in artifacts if item["path"] == "media/media-manifest.json"
-        )["sha256"]
+        expected = next(item for item in artifacts if item["path"] == "media/media-manifest.json")[
+            "sha256"
+        ]
         if _media_manifest_hash(media_manifest) != expected:
             raise RuntimeError("media manifest changed outside its bundle_id binding")
     return manifest
@@ -91,7 +91,11 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
     try:
         manifest = read_json(manifest_path)
     except (OSError, json.JSONDecodeError) as exc:
-        return {"passed": False, "errors": [f"manifest.json is unreadable: {exc}"], "warnings": warnings}
+        return {
+            "passed": False,
+            "errors": [f"manifest.json is unreadable: {exc}"],
+            "warnings": warnings,
+        }
     if manifest.get("schema") != "turbobench.manifest/v1":
         errors.append("unsupported manifest schema")
     expected_id = canonical_json_hash({**manifest, "bundle_id": ""})
@@ -170,6 +174,36 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         errors.append("valid result has invalid claim status")
     if not validity and claim != "diagnostic":
         errors.append("failed validity must force diagnostic claim status")
+    contract = result.get("turbo_contract")
+    contract_path = root / "verification" / "turbo-contract.json"
+    if not isinstance(contract, dict) or not contract_path.is_file():
+        errors.append("Turbo API contract reports are missing")
+    else:
+        recorded = read_json(contract_path)
+        if recorded.get("schema") != "turbobench.turbo-contract-reports/v1":
+            errors.append("unsupported Turbo API contract report collection")
+        if recorded.get("reports") != contract:
+            errors.append("Turbo API contract reports differ from result.json")
+        for side, report in contract.items():
+            if report.get("schema") != "turbobench.turbo-contract-report/v1":
+                errors.append(f"{side} has an unsupported Turbo contract report")
+                continue
+            expected_report_hash = canonical_json_hash(
+                {key: value for key, value in report.items() if key != "report_sha256"}
+            )
+            if report.get("report_sha256") != expected_report_hash:
+                errors.append(f"{side} Turbo contract report hash mismatch")
+        turbo_gate = next(
+            (
+                gate
+                for gate in result.get("validity", {}).get("gates", [])
+                if gate.get("name") == "Turbo API validity"
+            ),
+            None,
+        )
+        expected_gate = all(report.get("promotable") for report in contract.values())
+        if turbo_gate is None or bool(turbo_gate.get("passed")) != expected_gate:
+            errors.append("Turbo API validity gate is missing or inconsistent")
     if result.get("comparison", {}).get("outcome") not in {
         "left_faster",
         "right_faster",

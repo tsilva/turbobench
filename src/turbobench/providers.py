@@ -16,16 +16,16 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         id="supermariobrosnes-turbo",
         distribution="supermariobrosnes-turbo",
         import_name="supermariobrosnes_turbo",
-        adapter="turbo-vector-v1",
-        turbo_api=1,
+        adapter="turbo-vector-v2",
+        turbo_api=2,
         lineage="stable-retro/nes/supermariobros",
     ),
     "breakout-turbo-env": ProviderDefinition(
         id="breakout-turbo-env",
         distribution="breakout-turbo-env",
         import_name="breakout_turbo_env",
-        adapter="turbo-vector-v1",
-        turbo_api=1,
+        adapter="turbo-vector-v2",
+        turbo_api=2,
         lineage="stable-retro/atari2600/breakout",
     ),
     "stable-retro-turbo": ProviderDefinition(
@@ -33,6 +33,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         distribution="stable-retro-turbo",
         import_name="stable_retro",
         adapter="stable-retro-turbo",
+        turbo_api=2,
         lineage="stable-retro",
     ),
     "stable-retro": ProviderDefinition(
@@ -47,6 +48,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         distribution="vizdoom-turbo",
         import_name="vizdoom_turbo",
         adapter="vizdoom-turbo",
+        turbo_api=2,
         build_subdirectory="turbo",
         lineage="vizdoom",
     ),
@@ -77,7 +79,9 @@ def load_providers(*, include_plugins: bool = True) -> dict[str, ProviderDefinit
     return providers
 
 
-def parse_provider_ref(text: str, providers: dict[str, ProviderDefinition] | None = None) -> ProviderRef:
+def parse_provider_ref(
+    text: str, providers: dict[str, ProviderDefinition] | None = None
+) -> ProviderRef:
     known = providers or load_providers()
     provider, separator, selector = text.partition("@")
     if not _PROVIDER_ID.fullmatch(provider) or provider not in known:
@@ -102,4 +106,3 @@ def parse_provider_ref(text: str, providers: dict[str, ProviderDefinition] | Non
 def lineage_version(version: str) -> str:
     parsed = Version(version)
     return parsed.base_version
-

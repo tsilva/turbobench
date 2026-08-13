@@ -170,9 +170,42 @@ def run_comparison_resolved(
     shapes = _selected_shapes(profile, options)
     step_count = _selected_steps(profile, options)
     options.report_progress(
-        f"Starting {profile.id}: shapes {', '.join(map(str, shapes))}, "
-        f"{step_count} benchmark steps"
+        f"Starting {profile.id}: shapes {', '.join(map(str, shapes))}, {step_count} benchmark steps"
     )
+
+    contract_reports: dict[str, Any] = {}
+    for side, provider in (("left", left), ("right", right)):
+        report_path = partial / "verification" / f"turbo-contract-{side}.json"
+        if report_path.is_file():
+            report = read_json(report_path)
+        else:
+            options.report_progress(f"Turbo API preflight: {side} provider")
+            response = invoke_runner(
+                provider,
+                {
+                    **_base_request(provider, profile, 1, assets),
+                    "operation": "contract",
+                },
+                log_path=partial / "verification" / f"turbo-contract-{side}.log",
+            )
+            report = response.get("turbo_contract_report", {})
+        contract_reports[side] = report
+        write_json(report_path, report)
+    write_json(
+        partial / "verification" / "turbo-contract.json",
+        {"schema": "turbobench.turbo-contract-reports/v1", "reports": contract_reports},
+    )
+    failed_v2 = [
+        side
+        for side, report in contract_reports.items()
+        if report.get("api_version") == 2 and not report.get("passed")
+    ]
+    if failed_v2:
+        raise RuntimeError(
+            f"{', '.join(failed_v2)} provider(s) declare Turbo API v2 but failed validation; "
+            "both contract reports were recorded and no workload was executed"
+        )
+
     correctness: dict[str, Any] = {}
     action_records: dict[str, Any] = {}
     for shape in shapes:
@@ -281,13 +314,10 @@ def run_comparison_resolved(
         )
         comparison_shapes[str(shape)] = {
             "correctness": correctness[str(shape)],
-            "statistics": paired_statistics(
-                pairs, require_official_design=not options.quick
-            ),
+            "statistics": paired_statistics(pairs, require_official_design=not options.quick),
         }
         options.report_progress(
-            f"Shape {shape} complete: "
-            f"{comparison_shapes[str(shape)]['statistics']['outcome']}"
+            f"Shape {shape} complete: {comparison_shapes[str(shape)]['statistics']['outcome']}"
         )
 
     write_json(
@@ -320,6 +350,7 @@ def run_comparison_resolved(
         load,
         asset_record,
         options,
+        contract_reports,
     )
     validity_passed = all(gate.passed for gate in gates)
     diagnostic_reasons = [gate.detail for gate in gates if not gate.passed]
@@ -328,9 +359,7 @@ def run_comparison_resolved(
     diagnostic_reasons.extend(options.diagnostic_overrides)
     claim_status = "official" if validity_passed and not diagnostic_reasons else "diagnostic"
     shape_one = comparison_shapes.get("1")
-    headline_outcome = (
-        shape_one["statistics"]["outcome"] if shape_one else "inconclusive"
-    )
+    headline_outcome = shape_one["statistics"]["outcome"] if shape_one else "inconclusive"
     result = {
         "schema": RESULT_SCHEMA,
         "profile": {"id": profile.id, "sha256": profile_hash(profile)},
@@ -339,6 +368,7 @@ def run_comparison_resolved(
             "passed": validity_passed,
             "gates": [gate.__dict__ for gate in gates],
         },
+        "turbo_contract": contract_reports,
         "claim": {
             "status": claim_status,
             "diagnostic_reasons": sorted(set(diagnostic_reasons)),
@@ -363,7 +393,12 @@ def run_comparison_resolved(
     }
 
     replay_temp = partial / ".replay-frames"
-    if options.promo and validity_passed and claim_status == "official" and headline_outcome != "inconclusive":
+    if (
+        options.promo
+        and validity_passed
+        and claim_status == "official"
+        and headline_outcome != "inconclusive"
+    ):
         replay_temp.mkdir(exist_ok=True)
         replay_actions = promo_actions(profile)
         replay_hash = promo_action_hash(profile, replay_actions)
@@ -378,7 +413,12 @@ def run_comparison_resolved(
         replay_gate = compare_replays(left_replay, right_replay, profile)
         write_json(
             partial / "verification" / "promo-replay.json",
-            {"schema": "turbobench.promo-verification/v1", "gate": replay_gate, "left": left_replay, "right": right_replay},
+            {
+                "schema": "turbobench.promo-verification/v1",
+                "gate": replay_gate,
+                "left": left_replay,
+                "right": right_replay,
+            },
         )
         result["promo"]["replay_gate"] = replay_gate
         result["promo"]["eligible"] = promo_is_eligible(result, replay_gate)
@@ -407,7 +447,9 @@ def run_comparison_resolved(
     options.report_progress("Self-verifying result bundle")
     verification = verify_bundle(partial)
     if not verification["passed"]:
-        raise RuntimeError("final bundle failed self-verification: " + "; ".join(verification["errors"]))
+        raise RuntimeError(
+            "final bundle failed self-verification: " + "; ".join(verification["errors"])
+        )
     os.replace(partial, final)
     options.report_progress(f"Comparison complete: {final}")
     return final, result
@@ -443,7 +485,11 @@ def _selected_shapes(profile: Profile, options: ComparisonOptions) -> tuple[int,
 
 
 def _selected_steps(profile: Profile, options: ComparisonOptions) -> int:
-    value = options.steps if options.steps is not None else (100 if options.quick else profile.benchmark_steps)
+    value = (
+        options.steps
+        if options.steps is not None
+        else (100 if options.quick else profile.benchmark_steps)
+    )
     if value <= 0:
         raise ValueError("benchmark steps must be positive")
     return value
@@ -570,22 +616,91 @@ def _validity_gates(
     load: dict[str, Any],
     assets: dict[str, Any],
     options: ComparisonOptions,
+    contract_reports: dict[str, Any],
 ) -> list[Gate]:
-    harness_left = {line for line in left.installed_lock if line.casefold().startswith(("gymnasium==", "numpy=="))}
-    harness_right = {line for line in right.installed_lock if line.casefold().startswith(("gymnasium==", "numpy=="))}
+    harness_left = {
+        line
+        for line in left.installed_lock
+        if line.casefold().startswith(("gymnasium==", "numpy=="))
+    }
+    harness_right = {
+        line
+        for line in right.installed_lock
+        if line.casefold().startswith(("gymnasium==", "numpy=="))
+    }
     return [
-        Gate("compatible profile pair", profile.compatible(left.provider, right.provider) or left.adapter == right.adapter == "fake", f"{left.provider} versus {right.provider}"),
-        Gate("canonical assets", not assets.get("required") or bool(assets.get("available")), assets.get("detail", "canonical digests recorded")),
-        Gate("isolated runtimes", runtimes_are_isolated(left, right) or left.adapter == right.adapter == "fake", "separate content-addressed Python environments"),
-        Gate("common Python minor", left.python_minor == right.python_minor == options.python_minor, options.python_minor),
-        Gate("common harness lock", harness_left == harness_right, ", ".join(sorted(harness_left or harness_right)) or "fake harness"),
-        Gate("eligible exact artifacts", not left.diagnostic_reasons and not right.diagnostic_reasons, "no dirty/quarantined/relaxed provider artifacts"),
-        Gate("correctness at every shape", all(item["passed"] for item in correctness.values()), ", ".join(f"{shape}={'pass' if item['passed'] else 'fail'}" for shape, item in correctness.items())),
-        Gate("official sample design", shapes == profile.shapes and pair_count == 7, "shapes 1/16/32; one warmup pair; seven alternating pairs; three repetitions"),
-        Gate("system load", bool(load.get("passed")), f"one-minute load below {load.get('threshold')}; forced={load.get('forced')}"),
-        Gate("official host platform", bool(host_record()["official_v1_platform"]), "Apple-silicon macOS or x86-64 Linux"),
-        Gate("offline measurement", True, "network disabled in correctness, timing, and replay subprocesses"),
-        Gate("no diagnostic overrides", not options.diagnostic_overrides, ", ".join(options.diagnostic_overrides) or "none"),
+        Gate(
+            "compatible profile pair",
+            profile.compatible(left.provider, right.provider)
+            or left.adapter == right.adapter == "fake",
+            f"{left.provider} versus {right.provider}",
+        ),
+        Gate(
+            "canonical assets",
+            not assets.get("required") or bool(assets.get("available")),
+            assets.get("detail", "canonical digests recorded"),
+        ),
+        Gate(
+            "isolated runtimes",
+            runtimes_are_isolated(left, right) or left.adapter == right.adapter == "fake",
+            "separate content-addressed Python environments",
+        ),
+        Gate(
+            "common Python minor",
+            left.python_minor == right.python_minor == options.python_minor,
+            options.python_minor,
+        ),
+        Gate(
+            "common harness lock",
+            harness_left == harness_right,
+            ", ".join(sorted(harness_left or harness_right)) or "fake harness",
+        ),
+        Gate(
+            "eligible exact artifacts",
+            not left.diagnostic_reasons and not right.diagnostic_reasons,
+            "no dirty/quarantined/relaxed provider artifacts",
+        ),
+        Gate(
+            "correctness at every shape",
+            all(item["passed"] for item in correctness.values()),
+            ", ".join(
+                f"{shape}={'pass' if item['passed'] else 'fail'}"
+                for shape, item in correctness.items()
+            ),
+        ),
+        Gate(
+            "Turbo API validity",
+            all(report.get("promotable") for report in contract_reports.values()),
+            ", ".join(
+                f"{side}=api{report.get('api_version')}:{'pass' if report.get('promotable') else 'diagnostic'}"
+                for side, report in contract_reports.items()
+            ),
+        ),
+        Gate(
+            "official sample design",
+            shapes == profile.shapes and pair_count == 7,
+            "shapes 1/16/32; one warmup pair; seven alternating pairs; three repetitions",
+        ),
+        Gate(
+            "system load",
+            bool(load.get("passed")),
+            f"one-minute load below {load.get('threshold')}; forced={load.get('forced')}",
+        ),
+        Gate(
+            "official host platform",
+            bool(host_record()["official_v1_platform"]),
+            "Apple-silicon macOS or x86-64 Linux",
+        ),
+        Gate(
+            "offline measurement",
+            True,
+            "network disabled in correctness, timing, and replay subprocesses",
+        ),
+        Gate(
+            "no diagnostic overrides",
+            not options.diagnostic_overrides,
+            ", ".join(options.diagnostic_overrides) or "none",
+        ),
     ]
 
 
@@ -672,10 +787,17 @@ def generate_promo_for_bundle(
             result["promo"]["replay_gate"] = replay_gate
             result["promo"]["eligible"] = promo_is_eligible(result, replay_gate)
             if not diagnostic and not result["promo"]["eligible"]:
-                raise ValueError("bundle is invalid, inconclusive, or replay-incompatible; use --diagnostic for watermarked media")
+                raise ValueError(
+                    "bundle is invalid, inconclusive, or replay-incompatible; use --diagnostic for watermarked media"
+                )
             write_json(
                 staging / "verification" / "promo-replay.json",
-                {"schema": "turbobench.promo-verification/v1", "gate": replay_gate, "left": left_replay, "right": right_replay},
+                {
+                    "schema": "turbobench.promo-verification/v1",
+                    "gate": replay_gate,
+                    "left": left_replay,
+                    "right": right_replay,
+                },
             )
             report("Generating promotional MP4 and GIF")
             generate_media(
@@ -697,7 +819,9 @@ def generate_promo_for_bundle(
         report("Self-verifying updated bundle")
         staged_integrity = verify_bundle(staging)
         if not staged_integrity["passed"]:
-            raise RuntimeError("promoted bundle failed verification: " + "; ".join(staged_integrity["errors"]))
+            raise RuntimeError(
+                "promoted bundle failed verification: " + "; ".join(staged_integrity["errors"])
+            )
         os.replace(source, backup)
         try:
             os.replace(staging, source)
@@ -721,8 +845,12 @@ def _rehydrate_provider(payload: dict[str, Any]) -> ResolvedProvider:
         values["runtime_python"] = sys.executable
     elif identifier:
         root = cache_root() / "runtimes" / identifier
-        values["runtime_python"] = str(root / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
+        values["runtime_python"] = str(
+            root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        )
     provider = ResolvedProvider(**values)
     if not provider.runtime_python or not Path(provider.runtime_python).is_file():
-        raise FileNotFoundError(f"locked runtime is unavailable for {provider.provider}; rerun compare to resolve it")
+        raise FileNotFoundError(
+            f"locked runtime is unavailable for {provider.provider}; rerun compare to resolve it"
+        )
     return provider

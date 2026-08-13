@@ -25,11 +25,55 @@ from turbobench.runner import (
     _create_retro_overlay,
     _normalize_scalar_rgb,
     _semantic_raw_rgb,
+    _turbo_v2_options,
     execute,
     fractional_area_resize,
     integer_area_resize,
     preprocess_frame,
 )
+
+
+def test_turbo_provider_options_spell_out_every_benchmark_semantic() -> None:
+    profile = get_profile("breakout/start-v2")
+    options = _turbo_v2_options(profile, 16, profile.frame_skip)
+    assert tuple(options) == (
+        "state",
+        "scenario",
+        "info",
+        "record",
+        "players",
+        "inttype",
+        "obs_type",
+        "num_envs",
+        "num_threads",
+        "rom_path",
+        "transport",
+        "obs_copy",
+        "obs_resize",
+        "obs_crop",
+        "obs_crop_mode",
+        "obs_crop_fill",
+        "obs_grayscale",
+        "obs_resize_algorithm",
+        "obs_layout",
+        "frame_skip",
+        "frame_stack",
+        "maxpool_last_two",
+        "sticky_action_prob",
+        "noop_reset_max",
+        "use_fire_reset",
+        "reward_clip",
+        "info_filter",
+        "info_frame_stack_keys",
+        "use_restricted_actions",
+        "state_catalog",
+        "render_mode",
+    )
+    assert options["transport"] == "numpy"
+    assert options["num_envs"] == options["num_threads"] == 16
+    assert options["state"] is None
+    assert options["state_catalog"] == list(profile.states)
+    assert options["use_restricted_actions"] == list(profile.action_table.values())
 
 
 def test_button_mapping_translates_semantics_through_advertised_order() -> None:
@@ -131,7 +175,9 @@ def test_scalar_retro_overlay_exposes_every_canonical_state(tmp_path: Path) -> N
     try:
         game = Path(overlay.name) / profile.game
         assert (game / "rom.nes").resolve() == rom
-        assert all((game / f"{name}.state").resolve() == Path(path) for name, path in states.items())
+        assert all(
+            (game / f"{name}.state").resolve() == Path(path) for name, path in states.items()
+        )
     finally:
         overlay.cleanup()
 
@@ -184,7 +230,9 @@ def test_upstream_breakout_reset_advances_blank_tia_frame(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             self.__dict__.update(kwargs)
 
-    monkeypatch.setitem(__import__("sys").modules, "gymnasium", SimpleNamespace(spaces=SimpleNamespace(Box=Box)))
+    monkeypatch.setitem(
+        __import__("sys").modules, "gymnasium", SimpleNamespace(spaces=SimpleNamespace(Box=Box))
+    )
 
     class TransientBlankEnv:
         buttons = ("BUTTON",)
@@ -236,7 +284,10 @@ def test_upstream_breakout_reset_advances_blank_tia_frame(monkeypatch) -> None:
 def test_integer_area_preprocessing_matches_manual_bins_and_masks_hud() -> None:
     image = np.arange(8 * 8, dtype=np.uint8).reshape(8, 8)
     expected = np.asarray(
-        [[image[y : y + 2, x : x + 2].astype(np.uint64).sum() // 4 for x in range(0, 8, 2)] for y in range(0, 8, 2)],
+        [
+            [image[y : y + 2, x : x + 2].astype(np.uint64).sum() // 4 for x in range(0, 8, 2)]
+            for y in range(0, 8, 2)
+        ],
         dtype=np.uint8,
     )
     np.testing.assert_array_equal(integer_area_resize(image, 4, 4), expected)

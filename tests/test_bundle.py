@@ -25,6 +25,9 @@ def test_fake_provider_end_to_end_bundle_has_separate_statuses(fake_bundle: Path
     assert not result["promo"]["eligible"]
     assert set(result["comparison"]["shapes"]) == {"1"}
     assert not any(str(value).startswith("/") for value in result["commands"])
+    for report in result["turbo_contract"].values():
+        assert report["passed"]
+        assert any(check["name"] == "constructor common order" for check in report["checks"])
 
 
 def test_manifest_id_and_all_required_bundle_entries(fake_bundle: Path) -> None:
@@ -67,7 +70,9 @@ def test_status_consistency_detects_failed_validity_marked_official(fake_bundle:
     assert any("failed validity" in item for item in verification["errors"])
 
 
-def test_resume_reuses_completed_trace_and_invocations(fake_bundle: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resume_reuses_completed_trace_and_invocations(
+    fake_bundle: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     final = fake_bundle
     partial = final.with_name(final.name + ".partial")
     os.replace(final, partial)

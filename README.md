@@ -79,6 +79,10 @@ final machine-readable JSON.
 - Every official result must pass provider compatibility, matched correctness, system-load,
   alternating paired-measurement, statistical uncertainty, provenance, and asset gates.
   Quick runs and explicit overrides remain diagnostic.
+- Turbo providers are preflighted against the normative
+  [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Contract reports
+  are hash-bound into result bundles; malformed v2 providers stop before any
+  workload, while historical v1 providers remain diagnostic-only.
 - Result bundles contain the exact provider lock, shape-local statistics, report, chart, raw
   evidence, verification records, and optional media. `manifest.json` binds every portable
   file by size and SHA-256; turbobench does not upload or publish bundles.

@@ -13,6 +13,7 @@ import bisect
 import hashlib
 import importlib
 import importlib.metadata
+import inspect
 import os
 import shutil
 import tempfile
@@ -21,12 +22,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, ClassVar
 
 import numpy as np
 
 from turbobench.model import Profile
 from turbobench.profiles import get_profile
+from turbobench.turbo_api import (
+    TurboContractError,
+    declared_api_version,
+    legacy_report,
+    validate_constructor,
+    validate_environment,
+)
 from turbobench.util import canonical_json_hash, read_json, sha256_file, write_json
 
 
@@ -191,7 +200,10 @@ class BreakoutPaddleNormalizer:
         if not candidates:
             colors, counts = np.unique(frame[190], axis=0, return_counts=True)
             dominant = sorted(
-                ((int(count), tuple(int(channel) for channel in color)) for color, count in zip(colors, counts, strict=True)),
+                (
+                    (int(count), tuple(int(channel) for channel in color))
+                    for color, count in zip(colors, counts, strict=True)
+                ),
                 reverse=True,
             )[:8]
             red_rows = [
@@ -374,9 +386,7 @@ class ScalarPreprocessingEnv:
 
     def restore_oracle_snapshots(
         self,
-        snapshots: Sequence[
-            tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]
-        ],
+        snapshots: Sequence[tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]],
     ) -> bool:
         history, expected_stack, expected_raw = snapshots[self.config.worker_index]
         self._restoring_snapshot = True
@@ -500,12 +510,14 @@ class Adapter:
         provider: str,
         *,
         native_discrete: bool,
+        contract_report: dict[str, Any] | None = None,
         overlay: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
         self.env = env
         self.profile = profile
         self.provider = provider
         self.native_discrete = native_discrete
+        self.contract_report = contract_report or legacy_report(provider, None)
         self.overlay = overlay
         self.num_envs = int(env.num_envs)
         self._terminal_mask = np.zeros(self.num_envs, dtype=np.bool_)
@@ -513,7 +525,10 @@ class Adapter:
         self._table = tuple(profile.action_table.values())
         self._table_index = {_labels_key(labels): index for index, labels in enumerate(self._table)}
         self._semantic_indices = np.asarray(
-            [self._table_index[_labels_key(profile.action_table[name])] for name in profile.semantic_actions],
+            [
+                self._table_index[_labels_key(profile.action_table[name])]
+                for name in profile.semantic_actions
+            ],
             dtype=np.int64,
         )
         if native_discrete:
@@ -535,9 +550,7 @@ class Adapter:
         return ("BUTTON",)
 
     def initial_reset(self, seed: int) -> tuple[np.ndarray, dict[str, Any]]:
-        options = self._reset_options(
-            np.ones(self.num_envs, dtype=np.bool_), initial=True
-        )
+        options = self._reset_options(np.ones(self.num_envs, dtype=np.bool_), initial=True)
         self._terminal_mask.fill(False)
         self._render_cache = None
         return self.env.reset(seed=seed, options=options)
@@ -573,7 +586,9 @@ class Adapter:
         if self.native_discrete:
             index = self._table_index.get(_labels_key(labels))
             if index is None:
-                raise ValueError(f"promo action {tuple(labels)!r} is absent from the profile action table")
+                raise ValueError(
+                    f"promo action {tuple(labels)!r} is absent from the profile action table"
+                )
             return np.full(self.num_envs, index, dtype=np.int64)
         return _button_masks(repeated, self.buttons)
 
@@ -660,6 +675,7 @@ class Adapter:
             "adapter": "native-vector" if self.native_discrete else "scalar-async-vector",
             "autoreset_mode": str(getattr(self.env, "autoreset_mode", "disabled")),
             "turbo_api_version": getattr(self.env, "metadata", {}).get("turbo_api_version"),
+            "turbo_contract_report": self.contract_report,
             "action_table": [list(labels) for labels in self._table],
             "action_meanings": list(getattr(self.env, "action_meanings", ()) or ()),
             "buttons": list(self.buttons),
@@ -679,9 +695,7 @@ class Adapter:
                 if self.profile.logical_environment in {"supermario", "breakout"}
                 else "rgb8"
             ),
-            "source_channel_order": (
-                "rgb"
-            ),
+            "source_channel_order": ("rgb"),
             "palette_normalization": (
                 "stella-legacy-to-canonical-v1"
                 if self.provider == "stable-retro"
@@ -736,6 +750,199 @@ class Adapter:
                 self.overlay.cleanup()
 
 
+class _InMemorySpace:
+    def __init__(self, shape: tuple[int, ...], dtype: Any) -> None:
+        self.shape = shape
+        self.dtype = np.dtype(dtype)
+
+    def sample(self) -> np.ndarray:
+        return np.zeros(self.shape, dtype=self.dtype)
+
+
+class _InMemoryFakeV2Env:
+    """Small real v2 provider used to exercise contract gates in harness tests."""
+
+    metadata: ClassVar[dict[str, object]] = {
+        "autoreset_mode": "disabled",
+        "render_modes": ["rgb_array"],
+        "turbo_api_version": 2,
+        "transition_transport": "numpy",
+    }
+
+    def __init__(
+        self,
+        game,
+        state=None,
+        scenario=None,
+        info=None,
+        use_restricted_actions="default",
+        record=False,
+        players=1,
+        inttype="stable",
+        obs_type="image",
+        render_mode=None,
+        *,
+        num_envs=1,
+        num_threads=None,
+        rom_path=None,
+        transport="default",
+        obs_copy="safe_view",
+        obs_resize=(84, 84),
+        obs_crop=None,
+        obs_crop_mode="remove",
+        obs_crop_fill=0,
+        obs_grayscale=True,
+        obs_resize_algorithm="area",
+        obs_layout="chw",
+        frame_skip=4,
+        frame_stack=4,
+        maxpool_last_two=False,
+        noop_reset_max=0,
+        use_fire_reset=False,
+        sticky_action_prob=0.0,
+        reward_clip=False,
+        info_filter="all",
+        info_frame_stack_keys=None,
+        state_catalog=None,
+    ) -> None:
+        del (
+            game,
+            scenario,
+            info,
+            use_restricted_actions,
+            num_threads,
+            rom_path,
+            info_filter,
+        )
+        if state is not None and state_catalog is not None:
+            raise ValueError("state and state_catalog are mutually exclusive")
+        catalog = ("default",) if state_catalog is None else tuple(state_catalog)
+        if not catalog or len(set(catalog)) != len(catalog):
+            raise ValueError("state_catalog must be non-empty and duplicate-free")
+        if state not in (None, "default") or catalog != ("default",):
+            raise ValueError("the fake provider supports only its default state")
+        if transport == "default":
+            transport = "numpy"
+        if transport != "numpy":
+            raise ValueError("the fake provider uses NumPy transport")
+        neutral = (
+            record is False
+            and players == 1
+            and inttype == "stable"
+            and obs_type == "image"
+            and obs_copy in {"copy", "safe_view", "unsafe_view"}
+            and obs_resize == (84, 84)
+            and obs_crop is None
+            and obs_crop_mode == "remove"
+            and obs_crop_fill == 0
+            and obs_grayscale is True
+            and obs_resize_algorithm == "area"
+            and obs_layout == "chw"
+            and frame_skip == 4
+            and frame_stack == 4
+            and maxpool_last_two is False
+            and noop_reset_max == 0
+            and use_fire_reset is False
+            and sticky_action_prob == 0.0
+            and reward_clip is False
+            and info_frame_stack_keys is None
+        )
+        if not neutral:
+            raise ValueError("unsupported non-neutral fake provider option")
+        if render_mode not in (None, "rgb_array"):
+            raise ValueError("render_mode must be None or 'rgb_array'")
+        self.num_envs = int(num_envs)
+        self.transport = transport
+        self.render_mode = render_mode
+        self.state_catalog = catalog
+        self.observation_ownership = "owned" if obs_copy == "copy" else obs_copy
+        self.observation_buffer_depth = (
+            None if obs_copy == "copy" else 2 if obs_copy == "safe_view" else 1
+        )
+        self.single_observation_space = _InMemorySpace((4, 84, 84), np.uint8)
+        self.observation_space = _InMemorySpace((self.num_envs, 4, 84, 84), np.uint8)
+        self.action_space = _InMemorySpace((self.num_envs,), np.int64)
+        self._obs = np.zeros(self.observation_space.shape, dtype=np.uint8)
+        self._states = np.zeros(self.num_envs, dtype=np.int32)
+        self.signal_schema = MappingProxyType({})
+        self.capabilities = MappingProxyType(
+            {
+                "supported_action_modes": ("custom_discrete",),
+                "supported_observation_layouts": ("chw",),
+                "supported_observation_color_modes": ("grayscale",),
+                "supported_resize_algorithms": ("area",),
+                "supported_crop_modes": ("remove",),
+                "supported_observation_copy_modes": (
+                    "copy",
+                    "safe_view",
+                    "unsafe_view",
+                ),
+                "supported_transition_transports": ("numpy",),
+                "supports_async_step": False,
+                "supports_branching": False,
+                "supports_device_api": False,
+                "supports_emulator_ram": False,
+                "supports_enemy_variants": False,
+                "supports_fire_reset": False,
+                "supports_info_frame_stack": False,
+                "supports_live_snapshots": False,
+                "supports_maxpool_last_two": False,
+                "supports_noop_reset": False,
+                "supports_per_lane_rgb": render_mode == "rgb_array",
+                "supports_reward_clipping": False,
+                "supports_snapshot_codec": False,
+                "supports_state_catalog": True,
+                "supports_sticky_action_prob": False,
+                "supports_surface_variants": False,
+            }
+        )
+
+    def reset(self, *, seed=None, options=None):
+        del seed
+        options = dict(options or {})
+        mask = options.pop("reset_mask", np.ones(self.num_envs, dtype=np.bool_))
+        indices = options.pop("state_indices", self._states)
+        if options:
+            raise ValueError(f"unsupported reset options: {sorted(options)}")
+        self._states[mask] = indices[mask]
+        self._obs[mask] = 0
+        return self._obs.copy(), {
+            "state_index": self._states.copy(),
+            "_state_index": mask.copy(),
+            "start_source": np.zeros(self.num_envs, dtype=np.int8),
+            "_start_source": mask.copy(),
+            "noop_reset_count": np.zeros(self.num_envs, dtype=np.int64),
+            "_noop_reset_count": mask.copy(),
+        }
+
+    def step(self, actions):
+        self._obs += (np.asarray(actions, dtype=np.uint8) + 1)[:, None, None, None]
+        return (
+            self._obs.copy(),
+            np.zeros(self.num_envs, dtype=np.float32),
+            np.zeros(self.num_envs, dtype=np.bool_),
+            np.zeros(self.num_envs, dtype=np.bool_),
+            {},
+        )
+
+    def active_state_indices(self):
+        return self._states
+
+    def render_lane(self, lane):
+        if self.render_mode != "rgb_array":
+            return None
+        return np.full((8, 8, 3), lane, dtype=np.uint8)
+
+    def render(self):
+        return self.render_lane(0)
+
+    def get_images(self):
+        return [self.render_lane(lane) for lane in range(self.num_envs)]
+
+    def close(self):
+        pass
+
+
 class FakeAdapter:
     def __init__(self, profile: Profile, provider: str, shape: int, speed: float) -> None:
         self.profile = profile
@@ -745,15 +952,24 @@ class FakeAdapter:
         self.step_index = 0
         self._state = np.arange(shape, dtype=np.int64)
         self.in_promo = False
+        contract_env = _InMemoryFakeV2Env(
+            "Fake-v0",
+            num_envs=shape,
+            obs_copy="copy",
+            render_mode="rgb_array",
+        )
+        try:
+            self.contract_report = validate_environment(_InMemoryFakeV2Env, contract_env, provider)
+        finally:
+            contract_env.close()
+        if not self.contract_report["passed"]:
+            raise TurboContractError(self.contract_report)
 
     def initial_reset(self, seed: int):
         self.step_index = 0
         self.in_promo = False
         self._state = np.arange(self.num_envs, dtype=np.int64) + seed % 17
-        infos = {
-            key: np.zeros(self.num_envs, dtype=np.int64)
-            for key in self.profile.info_integer
-        }
+        infos = {key: np.zeros(self.num_envs, dtype=np.int64) for key in self.profile.info_integer}
         return self._obs(), infos
 
     def selective_reset(self, mask: np.ndarray):
@@ -778,8 +994,7 @@ class FakeAdapter:
             terminated[(self.step_index // 97) % self.num_envs] = True
         if self.in_promo:
             infos = {
-                key: np.zeros(self.num_envs, dtype=np.int64)
-                for key in self.profile.info_integer
+                key: np.zeros(self.num_envs, dtype=np.int64) for key in self.profile.info_integer
             }
             if self.profile.logical_environment == "supermario" and self.step_index >= 1_986:
                 infos["levelLo"][:] = 1
@@ -810,10 +1025,7 @@ class FakeAdapter:
         return frames
 
     def rams(self) -> list[np.ndarray]:
-        return [
-            np.full(128, int(value), dtype=np.uint8)
-            for value in self._state
-        ]
+        return [np.full(128, int(value), dtype=np.uint8) for value in self._state]
 
     def capture_snapshots(self) -> tuple[np.ndarray, int, bool]:
         return self._state.copy(), self.step_index, self.in_promo
@@ -829,12 +1041,20 @@ class FakeAdapter:
             "provider": self.provider,
             "adapter": "fake",
             "autoreset_mode": "disabled",
-            "turbo_api_version": 1,
+            "turbo_api_version": 2,
+            "turbo_contract_report": self.contract_report,
             "action_table": [list(value) for value in self.profile.action_table.values()],
             "action_meanings": list(self.profile.action_table),
-            "buttons": sorted({button for labels in self.profile.action_table.values() for button in labels}),
+            "buttons": sorted(
+                {button for labels in self.profile.action_table.values() for button in labels}
+            ),
             "capabilities": {"supports_per_lane_rgb": True, "supports_state_catalog": True},
-            "observation": {"shape": [4, 84, 84], "dtype": "uint8", "layout": "chw", "ownership": "owned"},
+            "observation": {
+                "shape": [4, 84, 84],
+                "dtype": "uint8",
+                "layout": "chw",
+                "ownership": "owned",
+            },
         }
 
     def close(self) -> None:
@@ -850,9 +1070,9 @@ def integer_area_resize(image: np.ndarray, height: int, width: int) -> np.ndarra
         np.arange(1, height + 1, dtype=np.int64) * source_height // height, y0 + 1
     ).clip(max=source_height)
     x0 = np.arange(width, dtype=np.int64) * source_width // width
-    x1 = np.maximum(
-        np.arange(1, width + 1, dtype=np.int64) * source_width // width, x0 + 1
-    ).clip(max=source_width)
+    x1 = np.maximum(np.arange(1, width + 1, dtype=np.int64) * source_width // width, x0 + 1).clip(
+        max=source_width
+    )
     integral = np.asarray(image, dtype=np.uint64).cumsum(axis=0).cumsum(axis=1)
     padding = ((1, 0), (1, 0)) + (((0, 0),) if image.ndim == 3 else ())
     integral = np.pad(integral, padding, mode="constant")
@@ -884,20 +1104,14 @@ def _fractional_area_plan(
         y_end = (out_y + 1) * source_height
         y_samples = []
         for source_y in range(y_start // height, min(source_height, -(-y_end // height))):
-            overlap = min(y_end, (source_y + 1) * height) - max(
-                y_start, source_y * height
-            )
+            overlap = min(y_end, (source_y + 1) * height) - max(y_start, source_y * height)
             y_samples.append((source_y, overlap))
         for out_x in range(width):
             x_start = out_x * source_width
             x_end = (out_x + 1) * source_width
             pixel_samples = []
-            for source_x in range(
-                x_start // width, min(source_width, -(-x_end // width))
-            ):
-                x_overlap = min(x_end, (source_x + 1) * width) - max(
-                    x_start, source_x * width
-                )
+            for source_x in range(x_start // width, min(source_width, -(-x_end // width))):
+                x_overlap = min(x_end, (source_x + 1) * width) - max(x_start, source_x * width)
                 pixel_samples.extend(
                     (source_y * source_width + source_x, y_overlap * x_overlap)
                     for source_y, y_overlap in y_samples
@@ -921,9 +1135,7 @@ def fractional_area_resize(image: np.ndarray, height: int, width: int) -> np.nda
     if image.ndim not in (2, 3):
         raise ValueError(f"expected HW or HWC image, got shape {image.shape}")
     source_height, source_width = image.shape[:2]
-    offsets, weights, divisor = _fractional_area_plan(
-        source_height, source_width, height, width
-    )
+    offsets, weights, divisor = _fractional_area_plan(source_height, source_width, height, width)
     flat = np.asarray(image, dtype=np.uint64).reshape(source_height * source_width, -1)
     sums = (flat[offsets] * weights[..., None]).sum(axis=1, dtype=np.uint64)
     resized = ((sums + divisor // 2) // divisor).astype(np.uint8)
@@ -941,12 +1153,8 @@ def fractional_area_resize(image: np.ndarray, height: int, width: int) -> np.nda
         floating_sums = [0.0] * source.shape[2]
         weight_sum = 0.0
         for source_y in range(int(y_start // 1), min(source_height, int(-(-y_end // 1)))):
-            y_weight = max(
-                0.0, min(y_end, float(source_y + 1)) - max(y_start, float(source_y))
-            )
-            for source_x in range(
-                int(x_start // 1), min(source_width, int(-(-x_end // 1)))
-            ):
+            y_weight = max(0.0, min(y_end, float(source_y + 1)) - max(y_start, float(source_y)))
+            for source_x in range(int(x_start // 1), min(source_width, int(-(-x_end // 1)))):
                 x_weight = max(
                     0.0,
                     min(x_end, float(source_x + 1)) - max(x_start, float(source_x)),
@@ -979,13 +1187,15 @@ def preprocess_frame(frame: np.ndarray, config: ScalarWorkerConfig) -> np.ndarra
         value = fractional_area_resize(value, *config.resize)
         if config.grayscale:
             rgb = value.astype(np.uint32)
-            value = (
-                (77 * rgb[..., 0] + 150 * rgb[..., 1] + 29 * rgb[..., 2] + 128) >> 8
-            ).astype(np.uint8)
+            value = ((77 * rgb[..., 0] + 150 * rgb[..., 1] + 29 * rgb[..., 2] + 128) >> 8).astype(
+                np.uint8
+            )
         return value[None, ...] if value.ndim == 2 else np.moveaxis(value, -1, 0)
     if config.grayscale:
         rgb = value.astype(np.uint32)
-        value = ((77 * rgb[..., 0] + 150 * rgb[..., 1] + 29 * rgb[..., 2] + 128) >> 8).astype(np.uint8)
+        value = ((77 * rgb[..., 0] + 150 * rgb[..., 1] + 29 * rgb[..., 2] + 128) >> 8).astype(
+            np.uint8
+        )
     resized = integer_area_resize(value, *config.resize)
     return resized[None, ...] if resized.ndim == 2 else np.moveaxis(resized, -1, 0)
 
@@ -1026,9 +1236,7 @@ def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
 
     value = normalize_rgb(frame)
     if profile.logical_environment == "supermario":
-        return np.bitwise_and(
-            value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8)
-        )
+        return np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
     return value
 
 
@@ -1064,7 +1272,9 @@ def _labels_key(labels: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(str(label).upper() for label in labels))
 
 
-def _button_masks(labels_per_lane: Sequence[Sequence[str]], buttons: Sequence[str | None]) -> np.ndarray:
+def _button_masks(
+    labels_per_lane: Sequence[Sequence[str]], buttons: Sequence[str | None]
+) -> np.ndarray:
     index = {str(button).upper(): offset for offset, button in enumerate(buttons) if button}
     masks = np.zeros((len(labels_per_lane), len(buttons)), dtype=np.int8)
     for lane, labels in enumerate(labels_per_lane):
@@ -1083,9 +1293,65 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
     assets = request.get("assets", {})
     if request.get("adapter") == "fake":
         return FakeAdapter(profile, provider, shape, float(request.get("fake_speed", 1.0)))
-    common = {
+    common = _turbo_v2_options(profile, shape, frame_skip)
+    rom_path = assets.get("rom_path")
+    if provider == "supermariobrosnes-turbo":
+        module = importlib.import_module("supermariobrosnes_turbo")
+        common["rom_path"] = rom_path
+        env, report = _construct_turbo_environment(
+            module.SuperMarioBrosNesTurboVecEnv, provider, profile.game, common
+        )
+        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
+    if provider == "breakout-turbo-env":
+        module = importlib.import_module("breakout_turbo_env")
+        env, report = _construct_turbo_environment(
+            module.BreakoutVecEnv, provider, profile.game, common
+        )
+        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
+    if provider == "stable-retro-turbo":
+        module = importlib.import_module("stable_retro")
+        if profile.native_transition_exact:
+            common["state_catalog"] = [
+                assets.get("state_paths", {}).get(state, state) for state in profile.states
+            ]
+        common["rom_path"] = rom_path
+        common["info"] = None if profile.native_transition_exact else assets.get("info_schema_path")
+        common["scenario"] = (
+            None if profile.native_transition_exact else assets.get("scenario_path")
+        )
+        env, report = _construct_turbo_environment(
+            module.RetroVecEnv, provider, profile.game, common
+        )
+        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
+    if provider == "vizdoom-turbo":
+        module = importlib.import_module("vizdoom_turbo")
+        common["game_variables"] = [
+            key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
+        ]
+        env, report = _construct_turbo_environment(
+            module.VizdoomTurboVecEnv, provider, profile.game, common
+        )
+        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
+    if provider in {"stable-retro", "vizdoom"}:
+        return _create_scalar_adapter(request, profile, frame_skip)
+    raise ValueError(f"no built-in adapter for {provider!r}")
+
+
+def _turbo_v2_options(profile: Profile, shape: int, frame_skip: int) -> dict[str, Any]:
+    """Spell out every shared benchmark semantic independently of API defaults."""
+
+    return {
+        "state": None,
+        "scenario": None,
+        "info": None,
+        "record": False,
+        "players": 1,
+        "inttype": "stable",
+        "obs_type": "image",
         "num_envs": shape,
         "num_threads": shape,
+        "rom_path": None,
+        "transport": "numpy",
         "obs_copy": "copy",
         "obs_resize": profile.resize,
         "obs_crop": (profile.crop_top, profile.crop_bottom, 0, 0),
@@ -1099,47 +1365,44 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
         "maxpool_last_two": profile.maxpool_last_two,
         "sticky_action_prob": 0.0,
         "noop_reset_max": 0,
+        "use_fire_reset": False,
+        "reward_clip": False,
         "info_filter": {"mode": "all", "keys": list(profile.info_integer + profile.info_float)},
+        "info_frame_stack_keys": None,
         "use_restricted_actions": list(profile.action_table.values()),
         "state_catalog": list(profile.states),
         "render_mode": "rgb_array",
     }
-    rom_path = assets.get("rom_path")
-    if provider == "supermariobrosnes-turbo":
-        module = importlib.import_module("supermariobrosnes_turbo")
-        env = module.SuperMarioBrosNesTurboVecEnv(profile.game, rom_path=rom_path, **common)
-        return Adapter(env, profile, provider, native_discrete=True)
-    if provider == "breakout-turbo-env":
-        module = importlib.import_module("breakout_turbo_env")
-        env = module.BreakoutVecEnv(game=profile.game, state=profile.states[0], **common)
-        return Adapter(env, profile, provider, native_discrete=True)
-    if provider == "stable-retro-turbo":
-        module = importlib.import_module("stable_retro")
-        if profile.native_transition_exact:
-            common["state_catalog"] = [
-                assets.get("state_paths", {}).get(state, state)
-                for state in profile.states
-            ]
-        env = module.RetroVecEnv(
-            profile.game,
-            rom_path=rom_path,
-            info=None if profile.native_transition_exact else assets.get("info_schema_path"),
-            scenario=None if profile.native_transition_exact else assets.get("scenario_path"),
-            **common,
-        )
-        return Adapter(env, profile, provider, native_discrete=True)
-    if provider == "vizdoom-turbo":
-        module = importlib.import_module("vizdoom_turbo")
-        common.pop("obs_crop")
-        common.pop("state_catalog")
-        common["game_variables"] = [
-            key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
-        ]
-        env = module.VizdoomTurboVecEnv(game=profile.game, **common)
-        return Adapter(env, profile, provider, native_discrete=True)
-    if provider in {"stable-retro", "vizdoom"}:
-        return _create_scalar_adapter(request, profile, frame_skip)
-    raise ValueError(f"no built-in adapter for {provider!r}")
+
+
+def _construct_turbo_environment(
+    environment_type: type[Any],
+    provider: str,
+    game: str,
+    options: Mapping[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    """Detect the declaration before construction and enforce v2 before use."""
+
+    api_version = declared_api_version(environment_type)
+    kwargs = dict(options)
+    kwargs.pop("state", None)  # state_catalog is the sole benchmark start selector
+    if api_version == 2:
+        preflight = validate_constructor(environment_type, provider)
+        if not preflight["passed"]:
+            raise TurboContractError(preflight)
+    elif api_version == 1:
+        parameters = inspect.signature(environment_type).parameters
+        kwargs = {name: value for name, value in kwargs.items() if name in parameters}
+    else:
+        raise TurboContractError(legacy_report(provider, api_version))
+    env = environment_type(game=game, **kwargs)
+    if api_version == 1:
+        return env, legacy_report(provider, 1)
+    report = validate_environment(environment_type, env, provider)
+    if not report["passed"]:
+        env.close()
+        raise TurboContractError(report)
+    return env, report
 
 
 def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip: int) -> Adapter:
@@ -1277,9 +1540,7 @@ def _snapshot_mismatches(
     expected: Sequence[Mapping[str, Any]], replayed: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     mismatches: list[dict[str, Any]] = []
-    for index, (left, right) in enumerate(
-        zip(expected, replayed, strict=False), start=1
-    ):
+    for index, (left, right) in enumerate(zip(expected, replayed, strict=False), start=1):
         for field in sorted(set(left) | set(right)):
             if left.get(field) != right.get(field):
                 mismatches.append(
@@ -1422,8 +1683,38 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
             "repetitions": 3,
             "sps": repetitions,
             "action_stream_sha256": request["action_stream_sha256"],
-            "timed_includes": ["step", "preprocessing", "ipc", "infos", "terminal_detection", "selective_reset"],
-            "timed_excludes": ["construction", "initial_reset", "action_generation", "warmup", "correctness", "rendering", "encoding"],
+            "timed_includes": [
+                "step",
+                "preprocessing",
+                "ipc",
+                "infos",
+                "terminal_detection",
+                "selective_reset",
+            ],
+            "timed_excludes": [
+                "construction",
+                "initial_reset",
+                "action_generation",
+                "warmup",
+                "correctness",
+                "rendering",
+                "encoding",
+            ],
+            "turbo_contract_report": adapter.contract_report,
+        }
+    finally:
+        adapter.close()
+
+
+def run_contract(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    adapter = _create_adapter(request, profile)
+    try:
+        return {
+            "schema": "turbobench.contract-preflight/v1",
+            "provider": request["provider"],
+            "profile": profile.id,
+            "workload_executed": False,
+            "turbo_contract_report": adapter.contract_report,
         }
     finally:
         adapter.close()
@@ -1493,6 +1784,7 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
             "transitions": transitions,
             "completion_step": completion_step,
             "raw_file_sha256": sha256_file(output),
+            "turbo_contract_report": adapter.contract_report,
         }
     finally:
         adapter.close()
@@ -1514,14 +1806,18 @@ def _completion_step(trace: Sequence[dict[str, Any]], completion: dict[str, Any]
     return None
 
 
-def _is_complete(completion: dict[str, Any], initial: dict[str, Any], transition: dict[str, Any]) -> bool:
+def _is_complete(
+    completion: dict[str, Any], initial: dict[str, Any], transition: dict[str, Any]
+) -> bool:
     kind = completion.get("kind")
     if kind == "trajectory-end":
         return int(transition["step"]) >= int(completion["step"])
     if kind == "info-change":
         keys = completion.get("keys", [])
-        return bool(keys) and all(key in transition["infos"] for key in keys) and any(
-            transition["infos"].get(key) != initial.get(key) for key in keys
+        return (
+            bool(keys)
+            and all(key in transition["infos"] for key in keys)
+            and any(transition["infos"].get(key) != initial.get(key) for key in keys)
         )
     if kind == "terminal-or-info-at-least":
         return bool(transition.get("terminated") or transition.get("truncated")) or float(
@@ -1548,16 +1844,27 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
     profile = get_profile(str(request["profile"]))
     operation = request["operation"]
     started = time.time_ns()
-    if operation == "trace":
-        payload = run_trace(request, profile)
-    elif operation == "benchmark":
-        payload = run_benchmark(request, profile)
-    elif operation == "promo":
-        payload = run_promo_replay(request, profile)
-    elif operation == "probe":
-        payload = {"schema": "turbobench.runner-probe/v1"}
-    else:
-        raise ValueError(f"unknown runner operation {operation!r}")
+    try:
+        if operation == "contract":
+            payload = run_contract(request, profile)
+        elif operation == "trace":
+            payload = run_trace(request, profile)
+        elif operation == "benchmark":
+            payload = run_benchmark(request, profile)
+        elif operation == "promo":
+            payload = run_promo_replay(request, profile)
+        elif operation == "probe":
+            payload = {"schema": "turbobench.runner-probe/v1"}
+        else:
+            raise ValueError(f"unknown runner operation {operation!r}")
+    except TurboContractError as exc:
+        payload = {
+            "schema": "turbobench.contract-failure/v1",
+            "provider": request.get("provider"),
+            "profile": profile.id,
+            "workload_executed": False,
+            "turbo_contract_report": exc.report,
+        }
     payload["runner"] = {
         "python": os.sys.version.split()[0],
         "provider_distribution": request.get("distribution"),
