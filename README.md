@@ -16,9 +16,18 @@ clearly watermarked.
 
 ## Install
 
-Install the published CLI from PyPI with `uv tool install turbobench-cli` or
-`pip install turbobench-cli`. The installed command and Python import remain
-`turbobench`.
+Install [turbobench-cli 1.0.0](https://pypi.org/project/turbobench-cli/1.0.0/)
+from PyPI:
+
+```bash
+uv tool install \
+  --exclude-newer-package turbobench-cli=2026-08-12T00:00:00Z \
+  turbobench-cli==1.0.0
+```
+
+Alternatively, install it in an active virtual environment with
+`python -m pip install turbobench-cli==1.0.0`. The installed command and Python
+import remain `turbobench`.
 
 For a development checkout:
 
@@ -28,24 +37,25 @@ cd turbobench
 uv sync --frozen --group dev
 ```
 
-Run `uv run turbobench profiles list` and `uv run turbobench providers list` to choose a
-compatible profile and provider pair.
+Run `turbobench profiles list` and `turbobench providers list` to choose a
+compatible profile and provider pair. Prefix CLI commands with `uv run` when
+working from a development checkout.
 
 ## Commands
 
 ```bash
-uv run turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile assets
-uv run turbobench profiles list                 # list immutable workloads
-uv run turbobench providers list                # list built-in and registered providers
+turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile assets
+turbobench profiles list                 # list immutable workloads
+turbobench providers list                # list built-in and registered providers
 
-uv run turbobench compare vizdoom/basic-v1 \
+turbobench compare vizdoom/basic-v1 \
   --left vizdoom-turbo@1.3.0.post23 \
   --right vizdoom@1.3.0 \
   --output turbobench-results/vizdoom            # create a result bundle
 
-uv run turbobench verify turbobench-results/vizdoom  # verify integrity and consistency
-uv run turbobench report turbobench-results/vizdoom  # print the generated report
-uv run turbobench promo turbobench-results/vizdoom --diagnostic
+turbobench verify turbobench-results/vizdoom  # verify integrity and consistency
+turbobench report turbobench-results/vizdoom  # print the generated report
+turbobench promo turbobench-results/vizdoom --diagnostic
 
 uv run --frozen ruff check .                    # lint the project
 uv run --frozen pytest -m "not acceptance"      # run tests without proprietary assets
