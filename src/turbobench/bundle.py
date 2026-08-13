@@ -25,7 +25,8 @@ REQUIRED_ENTRIES = {
     "report.md",
     "chart.svg",
 }
-REQUIRED_DIRECTORIES = {"raw", "verification", "media"}
+REQUIRED_DIRECTORIES = {"raw", "verification"}
+FINALIZED_DIRECTORIES = REQUIRED_DIRECTORIES | {"media"}
 
 
 def _media_manifest_hash(path: Path) -> str:
@@ -52,7 +53,7 @@ def artifact_record(root: Path, relative: Path) -> dict[str, Any]:
 
 
 def finalize_manifest(bundle: Path) -> dict[str, Any]:
-    for directory in REQUIRED_DIRECTORIES:
+    for directory in FINALIZED_DIRECTORIES:
         (bundle / directory).mkdir(parents=True, exist_ok=True)
     missing = sorted(name for name in REQUIRED_ENTRIES if not (bundle / name).is_file())
     if missing:

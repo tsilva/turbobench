@@ -40,6 +40,16 @@ def test_manifest_id_and_all_required_bundle_entries(fake_bundle: Path) -> None:
     assert reversal["shapes"]["1"]["statistics"]["outcome"] == "left_faster"
 
 
+def test_verification_allows_git_to_drop_empty_media_directory(
+    fake_bundle: Path,
+) -> None:
+    (fake_bundle / "media").rmdir()
+
+    verification = verify_bundle(fake_bundle)
+
+    assert verification["passed"]
+
+
 def test_tampering_and_unrecorded_files_are_detected(fake_bundle: Path) -> None:
     result_path = fake_bundle / "result.json"
     result_path.write_text(result_path.read_text() + " ", encoding="utf-8")
