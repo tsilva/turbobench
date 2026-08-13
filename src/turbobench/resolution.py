@@ -19,6 +19,7 @@ from turbobench.providers import lineage_version
 from turbobench.util import canonical_json_hash, sha256_file
 
 SEVEN_DAYS = timedelta(days=7)
+EXACT_QUARANTINE_EXEMPT_PROVIDERS = frozenset({"supermariobrosnes-turbo"})
 PYPI_URL = "https://pypi.org/pypi/{project}/json"
 
 
@@ -220,10 +221,17 @@ def resolve_pair(
             selected = next((item for item in candidates if item.version == reference.value), None)
             if selected is None:
                 raise ValueError(f"{reference.provider}@{reference.value} is unavailable or incompatible")
+            reasons: tuple[str, ...] = ()
+            if (
+                current - selected.uploaded < SEVEN_DAYS
+                and reference.provider not in EXACT_QUARANTINE_EXEMPT_PROVIDERS
+            ):
+                reasons = ("exact version is inside the seven-day quarantine",)
             resolved[side] = _release_to_resolved(
                 definition,
                 selected,
                 python_minor=python_minor,
+                diagnostic_reasons=reasons,
             )
     latest_sides = [side for side, reference in refs.items() if reference.selector == "latest"]
     eligible_by_side = {

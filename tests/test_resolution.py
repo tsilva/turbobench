@@ -69,7 +69,7 @@ def test_release_filtering_surfaces_quarantine_yanked_prerelease_and_python() ->
     assert ("1.4.0", "python-3.14-incompatible") in reasons
 
 
-def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_canonical() -> None:
+def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_diagnostic() -> None:
     profile = get_profile("vizdoom/basic-v1")
     common = _metadata(
         {
@@ -101,15 +101,44 @@ def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_canonical() ->
         now=NOW,
         metadata={"vizdoom-turbo": turbo, "vizdoom": common},
     )
-    assert not exact.left.diagnostic_reasons
-    assert not exact.right.diagnostic_reasons
-    reasons = {
+    assert exact.left.diagnostic_reasons == (
+        "exact version is inside the seven-day quarantine",
+    )
+    assert exact.right.diagnostic_reasons == (
+        "exact version is inside the seven-day quarantine",
+    )
+
+
+def test_exact_supermario_release_is_quarantine_exempt() -> None:
+    profile = get_profile("supermario/canonical-v1")
+    candidate = _metadata(
+        {"0.6.4": [_file(NOW - timedelta(days=1), requires=">=3.9")]}
+    )
+    baseline = _metadata(
+        {"1.0.1": [_file(NOW - timedelta(days=30), requires=">=3.9")]}
+    )
+
+    result = resolve_pair(
+        profile,
+        parse_provider_ref("supermariobrosnes-turbo@0.6.4"),
+        parse_provider_ref("stable-retro@1.0.1"),
+        BUILTIN_PROVIDERS,
+        now=NOW,
+        metadata={
+            "supermariobrosnes-turbo": candidate,
+            "stable-retro": baseline,
+        },
+    )
+
+    assert not result.left.diagnostic_reasons
+    assert not result.right.diagnostic_reasons
+    assert (
+        "0.6.4",
+        "seven-day-quarantine",
+    ) in {
         (item["version"], item["reason"])
-        for items in exact.excluded.values()
-        for item in items
+        for item in result.excluded["supermariobrosnes-turbo"]
     }
-    assert ("1.3.1.post1", "seven-day-quarantine") in reasons
-    assert ("1.3.1", "seven-day-quarantine") in reasons
 
 
 def test_latest_solves_newest_compatible_lineage_tuple_and_surfaces_newer() -> None:
