@@ -28,7 +28,11 @@ from typing import Any, ClassVar
 import numpy as np
 
 from turbobench.model import Profile
-from turbobench.profiles import get_profile
+from turbobench.profiles import (
+    BREAKOUT_RGB_TRANSPORT_CONVERSION,
+    allowed_representation_conversion,
+    get_profile,
+)
 from turbobench.turbo_api import (
     TurboContractError,
     declared_api_version,
@@ -365,6 +369,12 @@ class ScalarPreprocessingEnv:
     def render(self) -> np.ndarray:
         if self._raw_frame is None:
             raise RuntimeError("render requested before reset")
+        if (
+            self.config.native_transition_exact
+            and self.config.provider == "stable-retro"
+            and self.config.game.startswith("Breakout-Atari2600")
+        ):
+            return _canonical_stella_rgb(self._raw_frame)
         return self._raw_frame.copy()
 
     def ram(self) -> np.ndarray:
@@ -689,15 +699,28 @@ class Adapter:
                 "rgb565-native-code"
                 if self.profile.native_transition_exact
                 and self.profile.logical_environment == "supermario"
+                else BREAKOUT_RGB_TRANSPORT_CONVERSION
+                if self.profile.native_transition_exact
+                and self.profile.logical_environment == "breakout"
+                and self.provider == "stable-retro"
                 else "identity"
                 if self.profile.native_transition_exact
                 else "rgb565-high-bits"
                 if self.profile.logical_environment in {"supermario", "breakout"}
                 else "rgb8"
             ),
-            "source_channel_order": ("rgb"),
+            "source_channel_order": (
+                "bgr"
+                if self.provider == "stable-retro"
+                and self.profile.logical_environment == "breakout"
+                else "rgb"
+            ),
             "palette_normalization": (
-                "stella-legacy-to-canonical-v1"
+                BREAKOUT_RGB_TRANSPORT_CONVERSION
+                if self.provider == "stable-retro"
+                and self.profile.logical_environment == "breakout"
+                and self.profile.native_transition_exact
+                else "stella-legacy-to-canonical-v1"
                 if self.provider == "stable-retro"
                 and self.profile.logical_environment == "breakout"
                 and not self.profile.native_transition_exact
@@ -714,11 +737,8 @@ class Adapter:
             ),
             "semantic_authority": self.profile.semantic_authority,
             "native_transition_exact": self.profile.native_transition_exact,
-            "allowed_representation_conversion": (
-                "rgb888-expanded-to-rgb565-native-code"
-                if self.profile.native_transition_exact
-                and self.profile.logical_environment == "supermario"
-                else "identity"
+            "allowed_representation_conversion": allowed_representation_conversion(
+                self.profile
             ),
             "ram": {
                 "representation": (
@@ -1244,19 +1264,23 @@ def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     value = normalize_rgb(frame)
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
         if config.native_transition_exact:
+            # Stable Retro derives policy observations from these raw bytes.
+            # Human rendering normalizes the separate public render boundary.
             return value
-        value = np.ascontiguousarray(value[..., ::-1])
-        value = np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
-        # Stable Retro 1.0.1's scalar Atari binding predates the corrected
-        # Stella NTSC palette used by Stable Retro Turbo and the profile's
-        # canonical Breakout renderer. Only these three RGB565 entries differ.
-        for legacy, canonical in (
-            ((136, 140, 136), (136, 136, 136)),
-            ((192, 108, 56), (192, 104, 56)),
-            ((64, 156, 128), (64, 152, 128)),
-        ):
-            value[np.all(value == legacy, axis=-1)] = canonical
-        return value
+        return _canonical_stella_rgb(value)
+    return value
+
+
+def _canonical_stella_rgb(frame: Any) -> np.ndarray:
+    """Decode Stable Retro's BGR/RGB565 transport to canonical Stella RGB."""
+    value = np.ascontiguousarray(normalize_rgb(frame)[..., ::-1])
+    value = np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
+    for legacy, canonical in (
+        ((136, 140, 136), (136, 136, 136)),
+        ((192, 108, 56), (192, 104, 56)),
+        ((64, 156, 128), (64, 152, 128)),
+    ):
+        value[np.all(value == legacy, axis=-1)] = canonical
     return value
 
 
