@@ -16,6 +16,9 @@ MARIO_PROMO_RAW_ACTION_SHA256 = "544c08230ff5104f90d8cfca930bb0f4c961ac7ddfce02e
 MARIO_PROMO_PACKED_SHA256 = "5a3f60229d88d8d0cbd72c89c149a4304bea463688fe749dab6aa34a87a791e5"
 MARIO_PROMO_ACTION_COUNT = 1_986
 MARIO_BUTTON_ORDER = ("B", None, "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A")
+BREAKOUT_RGB_TRANSPORT_CONVERSION = (
+    "stable-retro-bgr-rgb565-to-canonical-stella-rgb"
+)
 
 # Imported once from the verified isolated GymRec replay. The unpacked 1,986x9
 # bytes hash to MARIO_PROMO_RAW_ACTION_SHA256; no GymRec/Hugging Face access is
@@ -137,6 +140,14 @@ PROFILES: dict[str, Profile] = {
         completion={"kind": "terminal-or-info-at-least", "key": "killcount", "value": 1},
     ),
 }
+
+
+def allowed_representation_conversion(profile: Profile) -> str:
+    if profile.logical_environment == "supermario":
+        return "rgb888-expanded-to-rgb565-native-code"
+    if profile.logical_environment == "breakout" and profile.native_transition_exact:
+        return BREAKOUT_RGB_TRANSPORT_CONVERSION
+    return "identity"
 
 
 def get_profile(profile_id: str) -> Profile:
@@ -282,11 +293,7 @@ def profile_payload(profile: Profile) -> dict[str, Any]:
             "steps": profile.oracle_steps,
             "snapshot_prefix_steps": profile.snapshot_prefix_steps,
             "snapshot_suffix_steps": profile.snapshot_suffix_steps,
-            "allowed_representation_conversion": (
-                "rgb888-expanded-to-rgb565-native-code"
-                if profile.logical_environment == "supermario"
-                else "identity"
-            ),
+            "allowed_representation_conversion": allowed_representation_conversion(profile),
         },
     }
 
@@ -351,11 +358,7 @@ def profile_toml(profile: Profile) -> str:
                 f"snapshot_prefix_steps = {profile.snapshot_prefix_steps}",
                 f"snapshot_suffix_steps = {profile.snapshot_suffix_steps}",
                 "allowed_representation_conversion = "
-                + quoted(
-                    "rgb888-expanded-to-rgb565-native-code"
-                    if profile.logical_environment == "supermario"
-                    else "identity"
-                ),
+                + quoted(allowed_representation_conversion(profile)),
             )
         )
     if profile.asset_sha256:

@@ -20,6 +20,7 @@ from turbobench.engine import _provider_summary, _trace
 from turbobench.model import Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
+    allowed_representation_conversion,
     get_profile,
     oracle_actions,
     profile_hash,
@@ -204,11 +205,7 @@ def run_oracle_resolved(
             "semantic_authority": profile.semantic_authority,
             "authority_present": profile.semantic_authority
             in {left.provider, right.provider},
-            "allowed_representation_conversion": (
-                "rgb888-expanded-to-rgb565-native-code"
-                if profile.logical_environment == "supermario"
-                else "identity"
-            ),
+            "allowed_representation_conversion": allowed_representation_conversion(profile),
             "compatibility_normalization_permitted": False,
             "ram_required": require_ram,
             "snapshot_continuation_required": True,

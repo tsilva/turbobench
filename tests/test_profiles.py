@@ -6,11 +6,13 @@ import tomllib
 import numpy as np
 
 from turbobench.profiles import (
+    BREAKOUT_RGB_TRANSPORT_CONVERSION,
     MARIO_BUTTON_ORDER,
     MARIO_PROMO_ACTION_COUNT,
     MARIO_PROMO_RAW_ACTION_SHA256,
     PROFILES,
     action_stream_hash,
+    allowed_representation_conversion,
     benchmark_actions,
     mario_promo_actions,
     oracle_actions,
@@ -61,6 +63,15 @@ def test_v2_profiles_are_exact_stable_retro_oracles() -> None:
         payload = profile_payload(profile)
         assert payload["oracle"]["native_transition_exact"]
         assert tomllib.loads(profile_toml(profile))["schema"] == "turbobench.profile/v2"
+    breakout = PROFILES["breakout/start-v2"]
+    assert (
+        allowed_representation_conversion(breakout)
+        == BREAKOUT_RGB_TRANSPORT_CONVERSION
+    )
+    assert (
+        profile_payload(breakout)["oracle"]["allowed_representation_conversion"]
+        == BREAKOUT_RGB_TRANSPORT_CONVERSION
+    )
 
 
 def test_oracle_actions_are_seeded_random_with_directed_prefix() -> None:

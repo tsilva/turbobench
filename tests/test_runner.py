@@ -22,6 +22,7 @@ from turbobench.runner import (
     ScalarWorkerConfig,
     _button_masks,
     _canonical_raw_rgb,
+    _canonical_stella_rgb,
     _create_retro_overlay,
     _normalize_scalar_rgb,
     _semantic_raw_rgb,
@@ -128,7 +129,7 @@ def test_upstream_atari_scalar_pixels_are_normalized_from_bgr() -> None:
     )
 
 
-def test_exact_upstream_atari_preserves_public_rgb_bytes() -> None:
+def test_exact_upstream_atari_separates_policy_bytes_from_render_transport() -> None:
     config = ScalarWorkerConfig(
         provider="stable-retro",
         game="Breakout-Atari2600-v0",
@@ -143,10 +144,11 @@ def test_exact_upstream_atari_preserves_public_rgb_bytes() -> None:
         resize=(84, 84),
         native_transition_exact=True,
     )
-    rgb = np.asarray([[[205, 72, 72], [139, 141, 139]]], dtype=np.uint8)
+    bgr = np.asarray([[[72, 72, 205], [139, 141, 139]]], dtype=np.uint8)
+    np.testing.assert_array_equal(_normalize_scalar_rgb(bgr, config), bgr)
     np.testing.assert_array_equal(
-        _normalize_scalar_rgb(rgb, config),
-        rgb,
+        _canonical_stella_rgb(bgr),
+        np.asarray([[[200, 72, 72], [136, 136, 136]]], dtype=np.uint8),
     )
 
 
