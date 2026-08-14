@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "turbobench-cli"
-version = "1.0.4"
+version = "1.0.5"
 description = "Correctness-gated, provider-neutral reinforcement-learning environment benchmarks"
 readme = "README.md"
 requires-python = ">=3.11"
