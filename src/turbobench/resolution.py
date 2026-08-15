@@ -19,7 +19,9 @@ from turbobench.providers import lineage_version
 from turbobench.util import canonical_json_hash, sha256_file
 
 SEVEN_DAYS = timedelta(days=7)
-EXACT_QUARANTINE_EXEMPT_PROVIDERS = frozenset({"supermariobrosnes-turbo"})
+EXACT_QUARANTINE_EXEMPT_PROVIDERS = frozenset(
+    {"breakout-turbo-env", "supermariobrosnes-turbo"}
+)
 PYPI_URL = "https://pypi.org/pypi/{project}/json"
 
 
