@@ -141,6 +141,34 @@ def test_exact_supermario_release_is_quarantine_exempt() -> None:
     }
 
 
+def test_exact_breakout_release_is_quarantine_exempt() -> None:
+    profile = get_profile("breakout/start-v2")
+    candidate = _metadata({"0.5.6": [_file(NOW - timedelta(days=1))]})
+    baseline = _metadata({"1.0.1": [_file(NOW - timedelta(days=30))]})
+
+    result = resolve_pair(
+        profile,
+        parse_provider_ref("stable-retro@1.0.1"),
+        parse_provider_ref("breakout-turbo-env@0.5.6"),
+        BUILTIN_PROVIDERS,
+        now=NOW,
+        metadata={
+            "stable-retro": baseline,
+            "breakout-turbo-env": candidate,
+        },
+    )
+
+    assert not result.left.diagnostic_reasons
+    assert not result.right.diagnostic_reasons
+    assert (
+        "0.5.6",
+        "seven-day-quarantine",
+    ) in {
+        (item["version"], item["reason"])
+        for item in result.excluded["breakout-turbo-env"]
+    }
+
+
 def test_latest_solves_newest_compatible_lineage_tuple_and_surfaces_newer() -> None:
     profile = get_profile("vizdoom/basic-v1")
     common = _metadata(
