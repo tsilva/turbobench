@@ -12,13 +12,13 @@ pytestmark = pytest.mark.acceptance
 
 
 REAL_PAIRS = (
-    ("supermario/canonical-v1", "supermariobrosnes-turbo", "stable-retro"),
-    ("supermario/canonical-v1", "supermariobrosnes-turbo", "stable-retro-turbo"),
-    ("supermario/canonical-v1", "stable-retro-turbo", "stable-retro"),
-    ("breakout/start-v1", "breakout-turbo-env", "stable-retro-turbo"),
-    ("breakout/start-v1", "breakout-turbo-env", "stable-retro"),
-    ("breakout/start-v1", "stable-retro-turbo", "stable-retro"),
-    ("vizdoom/basic-v1", "vizdoom-turbo", "vizdoom"),
+    ("supermario/canonical-v1", "env-supermariobrosnes-turbo-emu", "stable-retro"),
+    ("supermario/canonical-v1", "env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"),
+    ("supermario/canonical-v1", "env-stableretro-turbo", "stable-retro"),
+    ("breakout/start-v1", "env-breakoutatari2600-turbo-native", "env-stableretro-turbo"),
+    ("breakout/start-v1", "env-breakoutatari2600-turbo-native", "stable-retro"),
+    ("breakout/start-v1", "env-stableretro-turbo", "stable-retro"),
+    ("vizdoom/basic-v1", "env-vizdoom-turbo", "vizdoom"),
 )
 
 
@@ -41,4 +41,3 @@ def test_real_provider_pair_acceptance(
     assert result["promo"]["generated"]
     assert (bundle / "media" / "comparison.mp4").is_file()
     assert (bundle / "media" / "comparison.gif").is_file()
-

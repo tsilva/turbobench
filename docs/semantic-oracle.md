@@ -23,23 +23,23 @@ Run the full candidate matrix from clean checkouts while developing:
 ```bash
 turbobench oracle supermario/canonical-v2 \
   --left stable-retro@1.0.1 \
-  --right supermariobrosnes-turbo@checkout:/path/to/SuperMarioBros-Nes-turbo \
+  --right env-supermariobrosnes-turbo-emu@checkout:/path/to/env-SuperMarioBrosNes-turbo-emu \
   --output /external/evidence/mario-smb
 
 turbobench oracle supermario/canonical-v2 \
   --left stable-retro@1.0.1 \
-  --right stable-retro-turbo@checkout:/path/to/stable-retro-turbo \
-  --output /external/evidence/mario-stable-retro-turbo
+  --right env-stableretro-turbo@checkout:/path/to/env-StableRetro-turbo \
+  --output /external/evidence/mario-env-stableretro-turbo
 
 turbobench oracle breakout/start-v2 \
   --left stable-retro@1.0.1 \
-  --right breakout-turbo-env@checkout:/path/to/breakout-turbo-env \
+  --right env-breakoutatari2600-turbo-native@checkout:/path/to/env-BreakoutAtari2600-turbo-native \
   --output /external/evidence/breakout-native
 
 turbobench oracle breakout/start-v2 \
   --left stable-retro@1.0.1 \
-  --right stable-retro-turbo@checkout:/path/to/stable-retro-turbo \
-  --output /external/evidence/breakout-stable-retro-turbo
+  --right env-stableretro-turbo@checkout:/path/to/env-StableRetro-turbo \
+  --output /external/evidence/breakout-env-stableretro-turbo
 ```
 
 Keep receipts outside source repositories because they contain machine and
@@ -52,11 +52,11 @@ pinned PyPI authority, and a PyPI candidate artifact:
 turbobench verify-oracle /external/evidence/receipt
 turbobench verify-oracle /external/evidence/receipt \
   --require-canonical \
-  --require-provider supermariobrosnes-turbo
+  --require-provider env-supermariobrosnes-turbo-emu
 ```
 
 For example, replace a checkout reference with
-`supermariobrosnes-turbo@VERSION`, `stable-retro-turbo@VERSION`, or
-`breakout-turbo-env@VERSION` for the published-release run. `--allow-dirty`,
+`env-supermariobrosnes-turbo-emu@VERSION`, `env-stableretro-turbo@VERSION`, or
+`env-breakoutatari2600-turbo-native@VERSION` for the published-release run. `--allow-dirty`,
 `--steps`, `--shapes`, and every checkout selector are useful for development,
 but their receipts cannot satisfy the canonical release gate.

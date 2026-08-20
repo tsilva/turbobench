@@ -12,25 +12,25 @@ from packaging.version import InvalidVersion, Version
 from turbobench.model import ProviderDefinition, ProviderRef
 
 BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
-    "supermariobrosnes-turbo": ProviderDefinition(
-        id="supermariobrosnes-turbo",
-        distribution="supermariobrosnes-turbo",
+    "env-supermariobrosnes-turbo-emu": ProviderDefinition(
+        id="env-supermariobrosnes-turbo-emu",
+        distribution="env-supermariobrosnes-turbo-emu",
         import_name="supermariobrosnes_turbo",
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/nes/supermariobros",
     ),
-    "breakout-turbo-env": ProviderDefinition(
-        id="breakout-turbo-env",
-        distribution="breakout-turbo-env",
+    "env-breakoutatari2600-turbo-native": ProviderDefinition(
+        id="env-breakoutatari2600-turbo-native",
+        distribution="env-breakoutatari2600-turbo-native",
         import_name="breakout_turbo_env",
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/atari2600/breakout",
     ),
-    "stable-retro-turbo": ProviderDefinition(
-        id="stable-retro-turbo",
-        distribution="stable-retro-turbo",
+    "env-stableretro-turbo": ProviderDefinition(
+        id="env-stableretro-turbo",
+        distribution="env-stableretro-turbo",
         import_name="stable_retro",
         adapter="stable-retro-turbo",
         turbo_api=2,
@@ -43,9 +43,9 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         adapter="stable-retro-scalar",
         lineage="stable-retro",
     ),
-    "vizdoom-turbo": ProviderDefinition(
-        id="vizdoom-turbo",
-        distribution="vizdoom-turbo",
+    "env-vizdoom-turbo": ProviderDefinition(
+        id="env-vizdoom-turbo",
+        distribution="env-vizdoom-turbo",
         import_name="vizdoom_turbo",
         adapter="vizdoom-turbo",
         turbo_api=2,

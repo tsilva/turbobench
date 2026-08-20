@@ -10,14 +10,6 @@ resolution-markers = [
 exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
-[options.exclude-newer-package]
-stable-retro-turbo = "2026-07-29T13:20:49Z"
-vizdoom-turbo = "2026-08-10T16:08:36Z"
-gradoom = "2026-08-11T11:18:04Z"
-supermariobrosnes-turbo = "2026-07-29T13:20:49Z"
-breakout-turbo-env = "2026-07-29T13:20:49Z"
-gradlab = "2026-07-28T10:36:17Z"
-
 [manifest]
 constraints = [
     { name = "guardrails-ai", specifier = "!=0.10.1" },
@@ -333,7 +325,7 @@ wheels = [
 
 [[package]]
 name = "turbobench-cli"
-version = "1.0.5"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },

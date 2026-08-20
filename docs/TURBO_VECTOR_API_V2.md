@@ -59,8 +59,8 @@ lane-aligned `int32` indices.
 
 Providers declare `metadata["turbo_api_version"] == 2` and a resolved
 `metadata["transition_transport"]`. Mario, Breakout, Stable Retro Turbo, and
-ViZDoom Turbo use NumPy. GraDOOM uses Torch tensors on `env.device` and never
-offers NumPy transition transport.
+ViZDoom Turbo use NumPy. `env-Doom-turbo-torch` uses Torch tensors on
+`env.device` and never offers NumPy transition transport.
 
 Every lane-aligned transition value uses the declared transport: actions,
 reset masks, state indices, observations, rewards, termination and truncation

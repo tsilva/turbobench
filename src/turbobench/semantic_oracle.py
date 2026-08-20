@@ -406,7 +406,10 @@ def _requires_ram(
 ) -> bool:
     if profile.logical_environment == "supermario":
         return True
-    return "breakout-turbo-env" not in {left.provider, right.provider}
+    return "env-breakoutatari2600-turbo-native" not in {
+        left.provider,
+        right.provider,
+    }
 
 
 def _snapshot_window(profile: Profile, steps: int) -> tuple[int, int]:

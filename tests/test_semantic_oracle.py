@@ -55,14 +55,17 @@ def test_canonical_gate_rejects_short_or_non_pypi_receipt(
             str(semantic_receipt),
             "--require-canonical",
             "--require-provider",
-            "supermariobrosnes-turbo",
+            "env-supermariobrosnes-turbo-emu",
         ]
     ) == 1
     output = json.loads(capsys.readouterr().out)
     assert "receipt does not contain every canonical oracle shape" in output["errors"]
     assert "canonical receipt does not pin the PyPI semantic authority" in output["errors"]
     assert "canonical receipt candidate must be an installed PyPI release" in output["errors"]
-    assert "required provider is absent: supermariobrosnes-turbo" in output["errors"]
+    assert (
+        "required provider is absent: env-supermariobrosnes-turbo-emu"
+        in output["errors"]
+    )
 
 
 def test_receipt_with_failed_semantic_check_never_verifies(
