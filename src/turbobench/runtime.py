@@ -248,7 +248,7 @@ def _download_release_artifact(provider: ResolvedProvider) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.partial")
         try:
-            request = Request(url, headers={"User-Agent": "turbobench/1.0.0"})
+            request = Request(url, headers={"User-Agent": "turbobench/2.0.0"})
             with urlopen(request, timeout=120) as response, temporary.open("wb") as handle:
                 shutil.copyfileobj(response, handle)
             actual = sha256_file(temporary)

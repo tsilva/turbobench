@@ -20,7 +20,7 @@ from turbobench.util import canonical_json_hash, sha256_file
 
 SEVEN_DAYS = timedelta(days=7)
 EXACT_QUARANTINE_EXEMPT_PROVIDERS = frozenset(
-    {"breakout-turbo-env", "supermariobrosnes-turbo"}
+    {"env-breakoutatari2600-turbo-native", "env-supermariobrosnes-turbo-emu"}
 )
 PYPI_URL = "https://pypi.org/pypi/{project}/json"
 
@@ -301,11 +301,11 @@ def _enforce_lineage(left: ResolvedProvider, right: ResolvedProvider) -> None:
     if _lineages_match(left, right):
         return
     pair = {left.provider, right.provider}
-    if pair == {"vizdoom", "vizdoom-turbo"}:
+    if pair == {"vizdoom", "env-vizdoom-turbo"}:
         raise ValueError(
             f"ViZDoom base lineage mismatch: {left.version} versus {right.version}"
         )
-    if pair == {"stable-retro", "stable-retro-turbo"}:
+    if pair == {"stable-retro", "env-stableretro-turbo"}:
         raise ValueError(
             f"Stable Retro base lineage mismatch: {left.version} versus {right.version}"
         )
@@ -313,9 +313,9 @@ def _enforce_lineage(left: ResolvedProvider, right: ResolvedProvider) -> None:
 
 def _lineages_match(left: ResolvedProvider, right: ResolvedProvider) -> bool:
     pair = {left.provider, right.provider}
-    if pair == {"vizdoom", "vizdoom-turbo"}:
+    if pair == {"vizdoom", "env-vizdoom-turbo"}:
         return lineage_version(left.version) == lineage_version(right.version)
-    if pair == {"stable-retro", "stable-retro-turbo"}:
+    if pair == {"stable-retro", "env-stableretro-turbo"}:
         return lineage_version(left.version) == lineage_version(right.version)
     return True
 
@@ -325,8 +325,8 @@ def _compatible_tuple_key(
 ) -> tuple[Version, Version, Version]:
     left, right = pair
     if {left.provider, right.provider} in (
-        {"vizdoom", "vizdoom-turbo"},
-        {"stable-retro", "stable-retro-turbo"},
+        {"vizdoom", "env-vizdoom-turbo"},
+        {"stable-retro", "env-stableretro-turbo"},
     ):
         common = Version(lineage_version(left.version))
     else:
@@ -411,7 +411,7 @@ def _worktree_hash(root: Path) -> str:
 
 
 def _checkout_version(build_root: Path, root: Path, definition: ProviderDefinition) -> str:
-    if definition.id == "stable-retro-turbo":
+    if definition.id == "env-stableretro-turbo":
         return (root / "stable_retro" / "VERSION.txt").read_text().strip()
     text = (build_root / "pyproject.toml").read_text(encoding="utf-8")
     import tomllib

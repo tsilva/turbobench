@@ -48,6 +48,20 @@ def test_provider_ref_forms_and_validation(tmp_path: Path) -> None:
         parse_provider_ref("unknown")
 
 
+@pytest.mark.parametrize(
+    "legacy_provider",
+    (
+        "supermariobrosnes-turbo",
+        "breakout-turbo-env",
+        "stable-retro-turbo",
+        "vizdoom-turbo",
+    ),
+)
+def test_legacy_provider_ids_are_not_aliases(legacy_provider: str) -> None:
+    with pytest.raises(ValueError, match="unknown provider"):
+        parse_provider_ref(legacy_provider)
+
+
 def test_release_filtering_surfaces_quarantine_yanked_prerelease_and_python() -> None:
     metadata = _metadata(
         {
@@ -85,21 +99,21 @@ def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_diagnostic() -
     )
     latest = resolve_pair(
         profile,
-        parse_provider_ref("vizdoom-turbo"),
+        parse_provider_ref("env-vizdoom-turbo"),
         parse_provider_ref("vizdoom"),
         BUILTIN_PROVIDERS,
         now=NOW,
-        metadata={"vizdoom-turbo": turbo, "vizdoom": common},
+        metadata={"env-vizdoom-turbo": turbo, "vizdoom": common},
     )
     assert latest.left.version == "1.3.0.post2"
     assert latest.right.version == "1.3.0"
     exact = resolve_pair(
         profile,
-        parse_provider_ref("vizdoom-turbo@1.3.1.post1"),
+        parse_provider_ref("env-vizdoom-turbo@1.3.1.post1"),
         parse_provider_ref("vizdoom@1.3.1"),
         BUILTIN_PROVIDERS,
         now=NOW,
-        metadata={"vizdoom-turbo": turbo, "vizdoom": common},
+        metadata={"env-vizdoom-turbo": turbo, "vizdoom": common},
     )
     assert exact.left.diagnostic_reasons == (
         "exact version is inside the seven-day quarantine",
@@ -120,12 +134,12 @@ def test_exact_supermario_release_is_quarantine_exempt() -> None:
 
     result = resolve_pair(
         profile,
-        parse_provider_ref("supermariobrosnes-turbo@0.6.4"),
+        parse_provider_ref("env-supermariobrosnes-turbo-emu@0.6.4"),
         parse_provider_ref("stable-retro@1.0.1"),
         BUILTIN_PROVIDERS,
         now=NOW,
         metadata={
-            "supermariobrosnes-turbo": candidate,
+            "env-supermariobrosnes-turbo-emu": candidate,
             "stable-retro": baseline,
         },
     )
@@ -137,7 +151,7 @@ def test_exact_supermario_release_is_quarantine_exempt() -> None:
         "seven-day-quarantine",
     ) in {
         (item["version"], item["reason"])
-        for item in result.excluded["supermariobrosnes-turbo"]
+        for item in result.excluded["env-supermariobrosnes-turbo-emu"]
     }
 
 
@@ -149,12 +163,12 @@ def test_exact_breakout_release_is_quarantine_exempt() -> None:
     result = resolve_pair(
         profile,
         parse_provider_ref("stable-retro@1.0.1"),
-        parse_provider_ref("breakout-turbo-env@0.5.6"),
+        parse_provider_ref("env-breakoutatari2600-turbo-native@0.5.6"),
         BUILTIN_PROVIDERS,
         now=NOW,
         metadata={
             "stable-retro": baseline,
-            "breakout-turbo-env": candidate,
+            "env-breakoutatari2600-turbo-native": candidate,
         },
     )
 
@@ -165,7 +179,7 @@ def test_exact_breakout_release_is_quarantine_exempt() -> None:
         "seven-day-quarantine",
     ) in {
         (item["version"], item["reason"])
-        for item in result.excluded["breakout-turbo-env"]
+        for item in result.excluded["env-breakoutatari2600-turbo-native"]
     }
 
 
@@ -185,11 +199,11 @@ def test_latest_solves_newest_compatible_lineage_tuple_and_surfaces_newer() -> N
     )
     result = resolve_pair(
         profile,
-        parse_provider_ref("vizdoom-turbo"),
+        parse_provider_ref("env-vizdoom-turbo"),
         parse_provider_ref("vizdoom"),
         BUILTIN_PROVIDERS,
         now=NOW,
-        metadata={"vizdoom-turbo": turbo, "vizdoom": common},
+        metadata={"env-vizdoom-turbo": turbo, "vizdoom": common},
     )
     assert result.left.version == "1.3.0.post3"
     assert result.right.version == "1.3.0"
@@ -219,11 +233,11 @@ def test_latest_stable_retro_pair_requires_matching_base_lineage() -> None:
     )
     result = resolve_pair(
         profile,
-        parse_provider_ref("stable-retro-turbo"),
+        parse_provider_ref("env-stableretro-turbo"),
         parse_provider_ref("stable-retro"),
         BUILTIN_PROVIDERS,
         now=NOW,
-        metadata={"stable-retro-turbo": turbo, "stable-retro": common},
+        metadata={"env-stableretro-turbo": turbo, "stable-retro": common},
     )
     assert result.left.version == "1.0.1.post37"
     assert result.right.version == "1.0.1"
@@ -252,7 +266,7 @@ def test_profile_compatibility_and_lineage_are_enforced() -> None:
         )
     from turbobench.resolution import fake_resolved
 
-    left = fake_resolved("vizdoom-turbo")
+    left = fake_resolved("env-vizdoom-turbo")
     right = fake_resolved("vizdoom")
     left = left.__class__(**{**left.__dict__, "version": "1.3.0.post1"})
     right = right.__class__(**{**right.__dict__, "version": "1.4.0"})
@@ -264,7 +278,8 @@ def test_checkout_resolution_uses_clean_commit_tree_and_vizdoom_subproject(tmp_p
     root = tmp_path / "vizdoom"
     (root / "turbo").mkdir(parents=True)
     (root / "turbo" / "pyproject.toml").write_text(
-        '[project]\nname="vizdoom-turbo"\nversion="1.3.0.post1"\n', encoding="utf-8"
+        '[project]\nname="env-vizdoom-turbo"\nversion="1.3.0.post1"\n',
+        encoding="utf-8",
     )
     (root / "keep-benchmark.py").write_text("print('preserved')\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -275,14 +290,19 @@ def test_checkout_resolution_uses_clean_commit_tree_and_vizdoom_subproject(tmp_p
         check=True,
     )
     resolved = resolve_checkout(
-        BUILTIN_PROVIDERS["vizdoom-turbo"], root, python_minor="3.14"
+        BUILTIN_PROVIDERS["env-vizdoom-turbo"], root, python_minor="3.14"
     )
     assert resolved.build_root == "turbo"
     assert resolved.commit and resolved.tree and not resolved.diagnostic_reasons
     (root / "keep-benchmark.py").write_text("print('dirty')\n", encoding="utf-8")
     with pytest.raises(ValueError, match="dirty"):
-        resolve_checkout(BUILTIN_PROVIDERS["vizdoom-turbo"], root, python_minor="3.14")
+        resolve_checkout(
+            BUILTIN_PROVIDERS["env-vizdoom-turbo"], root, python_minor="3.14"
+        )
     dirty = resolve_checkout(
-        BUILTIN_PROVIDERS["vizdoom-turbo"], root, python_minor="3.14", allow_dirty=True
+        BUILTIN_PROVIDERS["env-vizdoom-turbo"],
+        root,
+        python_minor="3.14",
+        allow_dirty=True,
     )
     assert dirty.diagnostic_reasons == ("dirty checkout override",)

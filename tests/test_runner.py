@@ -385,7 +385,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
     adapter = Adapter(
         env,
         get_profile("supermario/canonical-v1"),
-        "supermariobrosnes-turbo",
+        "env-supermariobrosnes-turbo-emu",
         native_discrete=True,
     )
     adapter.initial_reset(123)

@@ -1319,20 +1319,20 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
         return FakeAdapter(profile, provider, shape, float(request.get("fake_speed", 1.0)))
     common = _turbo_v2_options(profile, shape, frame_skip)
     rom_path = assets.get("rom_path")
-    if provider == "supermariobrosnes-turbo":
+    if provider == "env-supermariobrosnes-turbo-emu":
         module = importlib.import_module("supermariobrosnes_turbo")
         common["rom_path"] = rom_path
         env, report = _construct_turbo_environment(
             module.SuperMarioBrosNesTurboVecEnv, provider, profile.game, common
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "breakout-turbo-env":
+    if provider == "env-breakoutatari2600-turbo-native":
         module = importlib.import_module("breakout_turbo_env")
         env, report = _construct_turbo_environment(
             module.BreakoutVecEnv, provider, profile.game, common
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "stable-retro-turbo":
+    if provider == "env-stableretro-turbo":
         module = importlib.import_module("stable_retro")
         if profile.native_transition_exact:
             common["state_catalog"] = [
@@ -1347,7 +1347,7 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
             module.RetroVecEnv, provider, profile.game, common
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "vizdoom-turbo":
+    if provider == "env-vizdoom-turbo":
         module = importlib.import_module("vizdoom_turbo")
         common["game_variables"] = [
             key.upper() for key in profile.info_integer if key.casefold() != "episode_time"

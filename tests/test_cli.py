@@ -25,7 +25,7 @@ def test_cli_exposes_benchmark_and_semantic_oracle_commands(capsys) -> None:
         assert command in help_text
     assert "publish" not in help_text
     assert main(["providers", "list"]) == 0
-    assert "supermariobrosnes-turbo" in capsys.readouterr().out
+    assert "env-supermariobrosnes-turbo-emu" in capsys.readouterr().out
     assert main(["profiles", "list"]) == 0
     assert "vizdoom/basic-v1" in capsys.readouterr().out
 
@@ -52,8 +52,8 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
 
     def fake_run(profile, left, right, bundle, options):
         assert profile == "supermario/canonical-v1"
-        assert left.provider == "supermariobrosnes-turbo"
-        assert right.provider == "stable-retro-turbo"
+        assert left.provider == "env-supermariobrosnes-turbo-emu"
+        assert right.provider == "env-stableretro-turbo"
         options.report_progress("Resolving package artifacts")
         return bundle.resolve(), {
             "validity": {"passed": True},
@@ -68,9 +68,9 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
             "compare",
             "supermario/canonical-v1",
             "--left",
-            "supermariobrosnes-turbo@latest",
+            "env-supermariobrosnes-turbo-emu@latest",
             "--right",
-            "stable-retro-turbo@latest",
+            "env-stableretro-turbo@latest",
             "--output",
             str(output),
         ]

@@ -16,17 +16,15 @@ clearly watermarked.
 
 ## Install
 
-Install [turbobench-cli 1.0.0](https://pypi.org/project/turbobench-cli/1.0.0/)
+Install [turbobench-cli 2.0.0](https://pypi.org/project/turbobench-cli/2.0.0/)
 from PyPI:
 
 ```bash
-uv tool install \
-  --exclude-newer-package turbobench-cli=2026-08-12T00:00:00Z \
-  turbobench-cli==1.0.0
+uv tool install turbobench-cli==2.0.0
 ```
 
 Alternatively, install it in an active virtual environment with
-`python -m pip install turbobench-cli==1.0.0`. The installed command and Python
+`python -m pip install turbobench-cli==2.0.0`. The installed command and Python
 import remain `turbobench`.
 
 For a development checkout:
@@ -49,7 +47,7 @@ turbobench profiles list                 # list immutable workloads
 turbobench providers list                # list built-in and registered providers
 
 turbobench compare vizdoom/basic-v1 \
-  --left vizdoom-turbo@1.3.0.post23 \
+  --left env-vizdoom-turbo@1.3.0.post27 \
   --right vizdoom@1.3.0 \
   --output turbobench-results/vizdoom            # create a result bundle
 
