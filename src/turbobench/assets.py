@@ -31,6 +31,9 @@ STATE_SHA256: dict[str, dict[str, str]] = {
     "breakout/start-v2": {
         "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
     },
+    "breakout/start-v3": {
+        "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
+    },
 }
 
 

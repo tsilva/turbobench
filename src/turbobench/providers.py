@@ -10,12 +10,13 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from turbobench.model import ProviderDefinition, ProviderRef
+from turbobench.provider_imports import PROVIDER_IMPORT_NAMES
 
 BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
     "env-supermariobrosnes-turbo-emu": ProviderDefinition(
         id="env-supermariobrosnes-turbo-emu",
         distribution="env-supermariobrosnes-turbo-emu",
-        import_name="supermariobrosnes_turbo",
+        import_name=PROVIDER_IMPORT_NAMES["env-supermariobrosnes-turbo-emu"],
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/nes/supermariobros",
@@ -23,7 +24,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
     "env-breakoutatari2600-turbo-native": ProviderDefinition(
         id="env-breakoutatari2600-turbo-native",
         distribution="env-breakoutatari2600-turbo-native",
-        import_name="breakout_turbo_env",
+        import_name=PROVIDER_IMPORT_NAMES["env-breakoutatari2600-turbo-native"],
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/atari2600/breakout",
@@ -31,7 +32,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
     "env-stableretro-turbo": ProviderDefinition(
         id="env-stableretro-turbo",
         distribution="env-stableretro-turbo",
-        import_name="stable_retro",
+        import_name=PROVIDER_IMPORT_NAMES["env-stableretro-turbo"],
         adapter="stable-retro-turbo",
         turbo_api=2,
         lineage="stable-retro",
@@ -39,14 +40,14 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
     "stable-retro": ProviderDefinition(
         id="stable-retro",
         distribution="stable-retro",
-        import_name="retro",
+        import_name=PROVIDER_IMPORT_NAMES["stable-retro"],
         adapter="stable-retro-scalar",
         lineage="stable-retro",
     ),
     "env-vizdoom-turbo": ProviderDefinition(
         id="env-vizdoom-turbo",
         distribution="env-vizdoom-turbo",
-        import_name="vizdoom_turbo",
+        import_name=PROVIDER_IMPORT_NAMES["env-vizdoom-turbo"],
         adapter="vizdoom-turbo",
         turbo_api=2,
         build_subdirectory="turbo",
@@ -55,7 +56,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
     "vizdoom": ProviderDefinition(
         id="vizdoom",
         distribution="vizdoom",
-        import_name="vizdoom",
+        import_name=PROVIDER_IMPORT_NAMES["vizdoom"],
         adapter="vizdoom-scalar",
         lineage="vizdoom",
     ),

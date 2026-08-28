@@ -9,6 +9,7 @@ import pytest
 from turbobench.profiles import get_profile
 from turbobench.providers import BUILTIN_PROVIDERS, parse_provider_ref
 from turbobench.resolution import (
+    _checkout_version,
     _enforce_lineage,
     pypi_candidates,
     resolve_checkout,
@@ -16,6 +17,34 @@ from turbobench.resolution import (
 )
 
 NOW = datetime(2026, 8, 7, tzinfo=UTC)
+
+
+def test_standardized_breakout_provider_imports() -> None:
+    assert (
+        BUILTIN_PROVIDERS["env-breakoutatari2600-turbo-native"].import_name
+        == "env_breakoutatari2600_turbo_native"
+    )
+    assert (
+        BUILTIN_PROVIDERS["env-stableretro-turbo"].import_name
+        == "env_stableretro_turbo"
+    )
+
+
+def test_stable_retro_turbo_checkout_uses_standardized_version_path(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "env_stableretro_turbo"
+    package.mkdir()
+    (package / "VERSION.txt").write_text("1.0.1.post44\n", encoding="utf-8")
+
+    assert (
+        _checkout_version(
+            tmp_path,
+            tmp_path,
+            BUILTIN_PROVIDERS["env-stableretro-turbo"],
+        )
+        == "1.0.1.post44"
+    )
 
 
 def _file(uploaded: datetime, *, yanked: bool = False, requires: str = ">=3.11") -> dict:

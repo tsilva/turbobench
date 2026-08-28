@@ -51,6 +51,16 @@ turbobench compare vizdoom/basic-v1 \
   --right vizdoom@1.3.0 \
   --output turbobench-results/vizdoom            # create a result bundle
 
+turbobench compare breakout/start-v3 \
+  --left env-breakoutatari2600-turbo-native@VERSION \
+  --right stable-retro@1.0.1 \
+  --output turbobench-results/breakout-vs-stable-retro
+
+turbobench compare breakout/start-v3 \
+  --left env-breakoutatari2600-turbo-native@VERSION \
+  --right env-stableretro-turbo@VERSION \
+  --output turbobench-results/breakout-vs-stable-retro-turbo
+
 turbobench verify turbobench-results/vizdoom  # verify integrity and consistency
 turbobench report turbobench-results/vizdoom  # print the generated report
 turbobench promo turbobench-results/vizdoom --diagnostic
@@ -66,14 +76,20 @@ final machine-readable JSON.
 
 - The controller supports Python 3.11 and newer. Provider runtimes default to CPython 3.14.
   `uv`, FFmpeg, and FFprobe are required.
-- Built-in profiles cover `supermario/canonical-v1`, `breakout/start-v1`, and
-  `vizdoom/basic-v1`. Shapes 1, 16, and 32 are measured and reported independently.
+- Current performance profiles cover `supermario/canonical-v1`,
+  `breakout/start-v3`, and `vizdoom/basic-v1`. Historical profiles remain
+  available for verifying their existing result bundles. Shapes 1, 16, and 32
+  are measured and reported independently.
 - Provider references accept `provider`, `provider@latest`, `provider@VERSION`, and
   `provider@checkout:/absolute/path`. `latest` excludes prereleases, yanked releases,
   incompatible artifacts, and releases still inside the seven-day quarantine.
 - Set `TURBOBENCH_ROM_PATH`, `TURBOBENCH_ASSET_ROOT`, or `RETRO_DATA_PATH` to locate required
   local game payloads. ROMs and local paths are never written to portable bundles; only
   canonical digests are recorded.
+- The `breakout/start-v3` profile compares the Atari 2600 Breakout `Start`
+  workload against either original Stable Retro or Stable Retro Turbo. Replace
+  `VERSION` with an exact release, use `@latest`, or select a clean checkout
+  with `@checkout:/absolute/path`.
 - Every official result must pass provider compatibility, matched correctness, system-load,
   alternating paired-measurement, statistical uncertainty, provenance, and asset gates.
   Quick runs and explicit overrides remain diagnostic.

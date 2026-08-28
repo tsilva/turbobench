@@ -48,6 +48,19 @@ def test_v1_profiles_are_immutable_and_complete() -> None:
         assert profile_payload(profile)["benchmark"]["action_table"]
 
 
+def test_current_breakout_benchmark_supports_upstream_and_turbo_references() -> None:
+    profile = PROFILES["breakout/start-v3"]
+    assert profile.providers == (
+        "env-breakoutatari2600-turbo-native",
+        "env-stableretro-turbo",
+        "stable-retro",
+    )
+    assert profile.shapes == (1, 16, 32)
+    assert profile.states == ("Start",)
+    assert profile.info_integer == ("score", "lives")
+    assert not profile.native_transition_exact
+
+
 def test_v2_profiles_are_exact_stable_retro_oracles() -> None:
     assert {profile_id for profile_id in PROFILES if profile_id.endswith("-v2")} == {
         "supermario/canonical-v2",
