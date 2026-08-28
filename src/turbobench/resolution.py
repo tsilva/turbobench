@@ -412,7 +412,7 @@ def _worktree_hash(root: Path) -> str:
 
 def _checkout_version(build_root: Path, root: Path, definition: ProviderDefinition) -> str:
     if definition.id == "env-stableretro-turbo":
-        return (root / "stable_retro" / "VERSION.txt").read_text().strip()
+        return (root / "env_stableretro_turbo" / "VERSION.txt").read_text().strip()
     text = (build_root / "pyproject.toml").read_text(encoding="utf-8")
     import tomllib
 

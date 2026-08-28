@@ -198,6 +198,26 @@ def test_normative_constructor_and_runtime_validator_pass() -> None:
     assert len(report["report_sha256"]) == 64
 
 
+def test_named_sequence_capability_extension_is_strictly_validated() -> None:
+    env = ConformingFakeV2(
+        "Fake-v0", num_envs=2, state_catalog=("default",), render_mode="rgb_array"
+    )
+    extended = {}
+    for name, value in env.capabilities.items():
+        extended[name] = value
+        if name == "supported_action_modes":
+            extended["supported_filtered_actions"] = ((0,), (1,))
+    env.capabilities = MappingProxyType(extended)
+    assert validate_environment(ConformingFakeV2, env, "extended")["passed"]
+
+    unknown = dict(extended)
+    unknown["provider_specific_unknown"] = ()
+    env.capabilities = MappingProxyType(unknown)
+    report = validate_environment(ConformingFakeV2, env, "unknown-extension")
+    assert not report["passed"]
+    assert any("exact capability keys" in error for error in report["errors"])
+
+
 def test_malformed_v2_constructor_fails() -> None:
     class Bad(ConformingFakeV2):
         def __init__(self, game, **kwargs):

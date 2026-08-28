@@ -90,10 +90,12 @@ returns lane zero, `render_lane(i)` returns one native RGB NumPy frame, and
 with exactly `dtype` (canonical string), `shape` (tuple),
 `available_on_reset` (bool), and `available_on_step` (bool).
 
-`capabilities` is immutable and contains exactly the keys exported as
-`turbobench.turbo_api.CAPABILITY_KEYS`. Sequence values are tuples. Feature
-values are booleans accurate for the configured instance and coherent with the
-methods that instance exposes.
+`capabilities` is immutable and contains every key exported as
+`turbobench.turbo_api.CAPABILITY_KEYS` in order. TurboBench may also recognize
+named sequence extensions exported through
+`turbobench.turbo_api.SEQUENCE_CAPABILITY_EXTENSIONS`; unknown keys remain
+invalid. Sequence values are tuples. Feature values are booleans accurate for
+the configured instance and coherent with the methods that instance exposes.
 
 Observation ownership is explicit: `copy` is permanently caller-owned,
 `safe_view` survives one subsequent observation-producing call, and

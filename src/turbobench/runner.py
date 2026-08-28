@@ -33,6 +33,7 @@ from turbobench.profiles import (
     allowed_representation_conversion,
     get_profile,
 )
+from turbobench.provider_imports import PROVIDER_IMPORT_NAMES
 from turbobench.turbo_api import (
     TurboContractError,
     declared_api_version,
@@ -56,6 +57,7 @@ class ScalarWorkerConfig:
     crop_mode: str
     grayscale: bool
     resize: tuple[int, int]
+    profile_id: str = ""
     info_keys: tuple[str, ...] = ()
     worker_index: int = 0
     native_transition_exact: bool = False
@@ -156,6 +158,17 @@ _PADDLE_MEASURE_LOWER_BOUNDS = (
 )
 
 
+def _needs_legacy_breakout_paddle_normalization(config: ScalarWorkerConfig) -> bool:
+    """Retain the historical v1 workload without changing current comparisons."""
+
+    return (
+        config.provider == "stable-retro"
+        and config.game.startswith("Breakout-Atari2600")
+        and config.profile_id == "breakout/start-v1"
+        and not config.native_transition_exact
+    )
+
+
 class BreakoutPaddleNormalizer:
     """Canonical corrected-Stella paddle state for upstream 1.0.1 frames."""
 
@@ -190,17 +203,27 @@ class BreakoutPaddleNormalizer:
     def normalize_frame(self, frame: np.ndarray) -> np.ndarray:
         if frame.shape[:2] != (210, 160):
             raise ValueError(f"canonical Breakout frame must be 210x160, got {frame.shape}")
+        candidates: list[tuple[int, int]] = []
         red = np.asarray([200, 72, 72], dtype=np.uint8)
-        mask = np.all(frame[190] == red, axis=1)
         runs: list[tuple[int, int]] = []
-        start: int | None = None
-        for offset, enabled in enumerate((*mask.tolist(), False)):
-            if enabled and start is None:
-                start = offset
-            elif not enabled and start is not None:
-                runs.append((start, offset - start))
-                start = None
-        candidates = [run for run in runs if run[1] in {12, 16}]
+        for candidate_red in (
+            red,
+            np.asarray([72, 72, 200], dtype=np.uint8),
+            np.asarray([72, 72, 205], dtype=np.uint8),
+        ):
+            mask = np.all(frame[190] == candidate_red, axis=1)
+            runs = []
+            start: int | None = None
+            for offset, enabled in enumerate((*mask.tolist(), False)):
+                if enabled and start is None:
+                    start = offset
+                elif not enabled and start is not None:
+                    runs.append((start, offset - start))
+                    start = None
+            candidates = [run for run in runs if run[1] in {12, 16}]
+            if candidates:
+                red = candidate_red
+                break
         if not candidates:
             colors, counts = np.unique(frame[190], axis=0, return_counts=True)
             dominant = sorted(
@@ -259,9 +282,7 @@ class ScalarPreprocessingEnv:
         self.render_mode = "rgb_array"
         self._paddle_normalizer = (
             BreakoutPaddleNormalizer()
-            if config.provider == "stable-retro"
-            and config.game.startswith("Breakout-Atari2600")
-            and not config.native_transition_exact
+            if _needs_legacy_breakout_paddle_normalization(config)
             else None
         )
 
@@ -618,7 +639,7 @@ class Adapter:
         frames = [
             _semantic_raw_rgb(frame, self.profile)
             if self.profile.native_transition_exact
-            else _canonical_raw_rgb(frame, self.profile)
+            else _comparison_raw_rgb(frame, self.profile, self.provider)
             for frame in raw
         ]
         if self.profile.logical_environment == "vizdoom-basic":
@@ -700,9 +721,8 @@ class Adapter:
                 if self.profile.native_transition_exact
                 and self.profile.logical_environment == "supermario"
                 else BREAKOUT_RGB_TRANSPORT_CONVERSION
-                if self.profile.native_transition_exact
-                and self.profile.logical_environment == "breakout"
-                and self.provider == "stable-retro"
+                if self.profile.logical_environment == "breakout"
+                and self.provider in {"stable-retro", "env-stableretro-turbo"}
                 else "identity"
                 if self.profile.native_transition_exact
                 else "rgb565-high-bits"
@@ -711,7 +731,7 @@ class Adapter:
             ),
             "source_channel_order": (
                 "bgr"
-                if self.provider == "stable-retro"
+                if self.provider in {"stable-retro", "env-stableretro-turbo"}
                 and self.profile.logical_environment == "breakout"
                 else "rgb"
             ),
@@ -721,7 +741,7 @@ class Adapter:
                 and self.profile.logical_environment == "breakout"
                 and self.profile.native_transition_exact
                 else "stella-legacy-to-canonical-v1"
-                if self.provider == "stable-retro"
+                if self.provider in {"stable-retro", "env-stableretro-turbo"}
                 and self.profile.logical_environment == "breakout"
                 and not self.profile.native_transition_exact
                 else "identity"
@@ -729,8 +749,7 @@ class Adapter:
             "compatibility_normalization": (
                 "upstream-stella-reset-and-paddle-v1"
                 if self.provider == "stable-retro"
-                and self.profile.logical_environment == "breakout"
-                and not self.profile.native_transition_exact
+                and self.profile.id == "breakout/start-v1"
                 else "vizdoom-last-valid-terminal-frame-v1"
                 if self.profile.logical_environment == "vizdoom-basic"
                 else "identity"
@@ -1245,6 +1264,16 @@ def _canonical_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
     return np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
 
 
+def _comparison_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray:
+    value = frame
+    if (
+        profile.logical_environment == "breakout"
+        and provider in {"stable-retro", "env-stableretro-turbo"}
+    ):
+        value = _canonical_stella_rgb(value)
+    return _canonical_raw_rgb(value, profile)
+
+
 def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
     """Decode public renders to the emulator's lossless native pixel code.
 
@@ -1263,11 +1292,9 @@ def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
 def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     value = normalize_rgb(frame)
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
-        if config.native_transition_exact:
-            # Stable Retro derives policy observations from these raw bytes.
-            # Human rendering normalizes the separate public render boundary.
-            return value
-        return _canonical_stella_rgb(value)
+        # Stable Retro derives policy observations from these raw bytes.
+        # Human rendering normalizes the separate comparison boundary.
+        return value
     return value
 
 
@@ -1320,20 +1347,20 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
     common = _turbo_v2_options(profile, shape, frame_skip)
     rom_path = assets.get("rom_path")
     if provider == "env-supermariobrosnes-turbo-emu":
-        module = importlib.import_module("supermariobrosnes_turbo")
+        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
         common["rom_path"] = rom_path
         env, report = _construct_turbo_environment(
             module.SuperMarioBrosNesTurboVecEnv, provider, profile.game, common
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
     if provider == "env-breakoutatari2600-turbo-native":
-        module = importlib.import_module("breakout_turbo_env")
+        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
         env, report = _construct_turbo_environment(
             module.BreakoutVecEnv, provider, profile.game, common
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
     if provider == "env-stableretro-turbo":
-        module = importlib.import_module("stable_retro")
+        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
         if profile.native_transition_exact:
             common["state_catalog"] = [
                 assets.get("state_paths", {}).get(state, state) for state in profile.states
@@ -1348,7 +1375,7 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
         )
         return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
     if provider == "env-vizdoom-turbo":
-        module = importlib.import_module("vizdoom_turbo")
+        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
         common["game_variables"] = [
             key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
         ]
@@ -1443,6 +1470,7 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
     configs = [
         ScalarWorkerConfig(
             provider=provider,
+            profile_id=profile.id,
             game=profile.game,
             state=profile.states[lane % len(profile.states)],
             integration_path=integration_path,

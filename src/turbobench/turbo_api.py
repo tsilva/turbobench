@@ -76,6 +76,7 @@ CAPABILITY_KEYS = (
 )
 
 SEQUENCE_CAPABILITIES = CAPABILITY_KEYS[:7]
+SEQUENCE_CAPABILITY_EXTENSIONS = ("supported_filtered_actions",)
 _PORTABLE_DTYPES = frozenset(
     {
         "bool",
@@ -258,11 +259,16 @@ def validate_environment(environment_type: type[Any], env: Any, provider: str) -
         f"got {type(capabilities).__name__}",
     )
     if isinstance(capabilities, Mapping):
+        common_capability_keys = tuple(
+            name
+            for name in capabilities
+            if name not in SEQUENCE_CAPABILITY_EXTENSIONS
+        )
         _check(
             checks,
             errors,
             "exact capability keys",
-            tuple(capabilities) == CAPABILITY_KEYS,
+            common_capability_keys == CAPABILITY_KEYS,
             f"got {tuple(capabilities)}",
         )
         for name in SEQUENCE_CAPABILITIES:
@@ -270,6 +276,16 @@ def validate_environment(environment_type: type[Any], env: Any, provider: str) -
                 checks,
                 errors,
                 f"immutable capability {name}",
+                isinstance(capabilities.get(name), tuple),
+                f"got {capabilities.get(name)!r}",
+            )
+        for name in SEQUENCE_CAPABILITY_EXTENSIONS:
+            if name not in capabilities:
+                continue
+            _check(
+                checks,
+                errors,
+                f"immutable capability extension {name}",
                 isinstance(capabilities.get(name), tuple),
                 f"got {capabilities.get(name)!r}",
             )
@@ -795,6 +811,7 @@ __all__ = [
     "CAPABILITY_KEYS",
     "COMMON_CONSTRUCTOR_DEFAULTS",
     "REPORT_SCHEMA",
+    "SEQUENCE_CAPABILITY_EXTENSIONS",
     "TURBO_API_VERSION",
     "TurboContractError",
     "declared_api_version",
