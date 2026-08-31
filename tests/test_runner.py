@@ -105,8 +105,8 @@ def test_exact_mario_raw_frames_decode_to_lossless_native_rgb565_codes() -> None
     native = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
     np.testing.assert_array_equal(
-        _semantic_raw_rgb(native, profile),
-        _semantic_raw_rgb(expanded, profile),
+        _semantic_raw_rgb(native, profile, "env-supermariobrosnes-turbo-emu"),
+        _semantic_raw_rgb(expanded, profile, "stable-retro"),
     )
 
 
@@ -420,6 +420,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 
         def __init__(self) -> None:
             self.options = None
+            self.seeds = []
 
         def active_state_indices(self) -> np.ndarray:
             # Native providers expose their default state before the first reset.
@@ -427,6 +428,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 
         def reset(self, *, seed=None, options=None):
             self.options = options
+            self.seeds.append(seed)
             return np.zeros((self.num_envs, 4, 84, 84), dtype=np.uint8), {}
 
         def close(self) -> None:
@@ -441,6 +443,8 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
     )
     adapter.initial_reset(123)
     np.testing.assert_array_equal(env.options["state_indices"], [0, 1, 2, 3, 0, 1])
+    adapter.selective_reset(np.asarray([True, False, False, True, False, False]))
+    assert env.seeds == [123, [129, None, None, 132, None, None]]
 
 
 def _trace_request(profile_id: str, shape: int = 3) -> dict:

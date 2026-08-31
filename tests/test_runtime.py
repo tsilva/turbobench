@@ -76,6 +76,7 @@ def test_selected_artifact_metadata_is_portable_and_exact() -> None:
 def test_clean_checkout_snapshot_preserves_provider_scripts_and_excludes_live_git(tmp_path: Path) -> None:
     dependency = tmp_path / "dependency"
     dependency.mkdir()
+    (dependency / ".gitignore").write_text("build/\n")
     (dependency / "header.hpp").write_text("// pinned submodule\n")
     subprocess.run(["git", "init", "-q"], cwd=dependency, check=True)
     subprocess.run(["git", "add", "."], cwd=dependency, check=True)
@@ -122,6 +123,27 @@ def test_clean_checkout_snapshot_preserves_provider_scripts_and_excludes_live_gi
     assert (destination / "vendor/dependency/header.hpp").read_text() == "// pinned submodule\n"
     assert not (destination / ".git").exists()
     assert not (destination / "vendor/dependency/.git").exists()
+
+    live_submodule = root / "vendor/dependency"
+    (live_submodule / "header.hpp").write_text("// current work\n")
+    (live_submodule / "new.hpp").write_text("// untracked current work\n")
+    (live_submodule / "build").mkdir()
+    (live_submodule / "build/cache.bin").write_bytes(b"ignored host output")
+    dirty = resolve_checkout(
+        BUILTIN_PROVIDERS["env-breakoutatari2600-turbo-native"],
+        root,
+        python_minor="3.14",
+        allow_dirty=True,
+    )
+    dirty_destination = tmp_path / "dirty-snapshot"
+    _snapshot_checkout(dirty, root, dirty_destination)
+    assert dirty.artifact_sha256 != resolved.artifact_sha256
+    assert (dirty_destination / "vendor/dependency/header.hpp").read_text() == "// current work\n"
+    assert (dirty_destination / "vendor/dependency/new.hpp").read_text() == (
+        "// untracked current work\n"
+    )
+    assert not (dirty_destination / "vendor/dependency/build").exists()
+    assert not (dirty_destination / "vendor/dependency/.git").exists()
 
 
 def test_dirty_checkout_snapshot_overlays_git_visible_files_only(tmp_path: Path) -> None:

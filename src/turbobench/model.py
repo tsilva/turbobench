@@ -20,12 +20,13 @@ class ProviderDefinition:
     turbo_api: int | None = None
     pypi_project: str | None = None
     lineage: str | None = None
+    environment_class: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderRef:
     provider: str
-    selector: Literal["latest", "version", "checkout"]
+    selector: Literal["latest", "version", "checkout", "artifact"]
     value: str
 
     def __str__(self) -> str:
@@ -33,6 +34,8 @@ class ProviderRef:
             return self.provider
         if self.selector == "checkout":
             return f"{self.provider}@checkout:{self.value}"
+        if self.selector == "artifact":
+            return f"{self.provider}@artifact:{self.value}"
         return f"{self.provider}@{self.value}"
 
 
@@ -43,7 +46,7 @@ class ResolvedProvider:
     distribution: str
     import_name: str
     version: str
-    source_kind: Literal["pypi", "checkout", "fake"]
+    source_kind: Literal["pypi", "checkout", "artifact", "fake"]
     source_identity: str
     artifact_sha256: str
     python_minor: str
@@ -57,6 +60,7 @@ class ResolvedProvider:
     runtime_id: str | None = None
     runtime_python: str | None = None
     installed_lock: tuple[str, ...] = ()
+    environment_class: str | None = None
 
     def portable(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -102,16 +106,34 @@ class Profile:
     promo_steps: int = 1_200
     completion: dict[str, Any] = field(default_factory=dict)
     asset_sha256: str | None = None
-    semantic_authority: str | None = None
-    semantic_authority_version: str | None = None
     native_transition_exact: bool = False
-    oracle_shapes: tuple[int, ...] = (1, 4)
-    oracle_steps: int = 4_096
-    snapshot_prefix_steps: int = 128
-    snapshot_suffix_steps: int = 128
 
     def compatible(self, left: str, right: str) -> bool:
         return left != right and left in self.providers and right in self.providers
+
+
+@dataclass(frozen=True)
+class ParityProfile:
+    """Strict declarative cross-provider parity commitment."""
+
+    schema: str
+    id: str
+    base_profile: str
+    authority: str
+    authority_version: str
+    candidates: tuple[str, ...]
+    checks: tuple[str, ...]
+    shapes: tuple[int, ...]
+    steps: int
+    quick_shapes: tuple[int, ...]
+    quick_steps: int
+    seed: int
+    snapshot_prefix_steps: int
+    snapshot_suffix_steps: int
+    allowed_representation_conversion: str
+
+    def accepts(self, candidate: str) -> bool:
+        return candidate in self.candidates and candidate != self.authority
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ from turbobench.resolution import (
     _checkout_version,
     _enforce_lineage,
     pypi_candidates,
+    resolve_artifact,
     resolve_checkout,
     resolve_pair,
 )
@@ -75,6 +76,21 @@ def test_provider_ref_forms_and_validation(tmp_path: Path) -> None:
         parse_provider_ref("vizdoom@checkout:relative")
     with pytest.raises(ValueError, match="unknown"):
         parse_provider_ref("unknown")
+
+
+def test_exact_local_wheel_ref_is_portable_and_content_addressed(tmp_path: Path) -> None:
+    wheel = tmp_path / "env_vizdoom_turbo-1.3.0.post1-py3-none-any.whl"
+    wheel.write_bytes(b"exact wheel bytes")
+    reference = parse_provider_ref(f"env-vizdoom-turbo@artifact:{wheel}")
+
+    resolved = resolve_artifact(
+        BUILTIN_PROVIDERS[reference.provider], Path(reference.value), python_minor="3.14"
+    )
+
+    assert reference.selector == "artifact"
+    assert resolved.source_kind == "artifact"
+    assert str(tmp_path) not in resolved.source_identity
+    assert resolved.selected_artifact == resolved.release_files[0]
 
 
 @pytest.mark.parametrize(
@@ -322,7 +338,8 @@ def test_checkout_resolution_uses_clean_commit_tree_and_vizdoom_subproject(tmp_p
         BUILTIN_PROVIDERS["env-vizdoom-turbo"], root, python_minor="3.14"
     )
     assert resolved.build_root == "turbo"
-    assert resolved.commit and resolved.tree and not resolved.diagnostic_reasons
+    assert resolved.commit and resolved.tree
+    assert resolved.diagnostic_reasons == ("checkout source",)
     (root / "keep-benchmark.py").write_text("print('dirty')\n", encoding="utf-8")
     with pytest.raises(ValueError, match="dirty"):
         resolve_checkout(
@@ -334,4 +351,4 @@ def test_checkout_resolution_uses_clean_commit_tree_and_vizdoom_subproject(tmp_p
         python_minor="3.14",
         allow_dirty=True,
     )
-    assert dirty.diagnostic_reasons == ("dirty checkout override",)
+    assert dirty.diagnostic_reasons == ("checkout source", "dirty checkout override")

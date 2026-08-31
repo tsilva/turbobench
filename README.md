@@ -6,9 +6,10 @@
 
 `turbobench` is a local Python CLI for reinforcement-learning environment authors,
 researchers, and provider maintainers who need fair performance comparisons between
-compatible implementations. It verifies that two providers produce matching transitions
-before timing them, then writes a portable, self-verifying evidence bundle. Run it with a
-built-in workload profile and two provider references.
+compatible implementations and standardized cross-provider parity checks. Immutable
+parity profiles pin the original authority, exact checks, full workload, and quick
+development workload. Both parity and benchmark runs produce portable,
+self-verifying evidence.
 
 Optional comparison videos replay the same locked providers and semantic action trajectory.
 Only valid, conclusive evidence can produce unmarked promotional media; diagnostic output is
@@ -46,6 +47,16 @@ turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile as
 turbobench profiles list                 # list immutable workloads
 turbobench providers list                # list built-in and registered providers
 
+turbobench parity supermario/canonical-v2 \
+  --candidate env-supermariobrosnes-turbo-emu@checkout:/absolute/path/to/repo \
+  --allow-dirty --quick                         # test current work diagnostically
+
+turbobench parity vizdoom/basic-v2 \
+  --candidate env-vizdoom-turbo@artifact:/absolute/path/to/final.whl \
+  --output turbobench-parity/vizdoom            # certify the exact final wheel
+
+turbobench verify-parity turbobench-parity/vizdoom --require-canonical
+
 turbobench compare vizdoom/basic-v1 \
   --left env-vizdoom-turbo@1.3.0.post27 \
   --right vizdoom@1.3.0 \
@@ -80,8 +91,9 @@ final machine-readable JSON.
   `breakout/start-v3`, and `vizdoom/basic-v1`. Historical profiles remain
   available for verifying their existing result bundles. Shapes 1, 16, and 32
   are measured and reported independently.
-- Provider references accept `provider`, `provider@latest`, `provider@VERSION`, and
-  `provider@checkout:/absolute/path`. `latest` excludes prereleases, yanked releases,
+- Provider references accept `provider`, `provider@latest`, `provider@VERSION`,
+  `provider@artifact:/absolute/path.whl`, and `provider@checkout:/absolute/path`.
+  `latest` excludes prereleases, yanked releases,
   incompatible artifacts, and releases still inside the seven-day quarantine.
 - Set `TURBOBENCH_ROM_PATH`, `TURBOBENCH_ASSET_ROOT`, or `RETRO_DATA_PATH` to locate required
   local game payloads. ROMs and local paths are never written to portable bundles; only
@@ -93,6 +105,9 @@ final machine-readable JSON.
 - Every official result must pass provider compatibility, matched correctness, system-load,
   alternating paired-measurement, statistical uncertainty, provenance, and asset gates.
   Quick runs and explicit overrides remain diagnostic.
+- Exact release parity accepts only the final local wheel on the chosen canonical host.
+  Checkout snapshots include tracked edits and nonignored untracked source, so developers
+  do not need to commit before running a quick diagnostic check.
 - Turbo providers are preflighted against the normative
   [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Contract reports
   are hash-bound into result bundles; malformed v2 providers stop before any

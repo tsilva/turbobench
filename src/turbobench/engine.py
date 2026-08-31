@@ -52,6 +52,7 @@ class ComparisonOptions:
     python_minor: str = "3.14"
     steps: int | None = None
     shapes: tuple[int, ...] | None = None
+    parity_receipt: Path | None = None
     command: tuple[str, ...] = ()
     progress: Callable[[str], None] | None = dataclass_field(
         default=None, compare=False, repr=False
@@ -103,6 +104,8 @@ def run_comparison(
     left = prepare_runtime(
         resolution.left,
         checkout_path=Path(left_ref.value) if left_ref.selector == "checkout" else None,
+        artifact_path=Path(left_ref.value) if left_ref.selector == "artifact" else None,
+        cache_context=profile_hash(profile),
         progress=options.progress,
     )
     options.report_progress("Left runtime ready")
@@ -110,6 +113,8 @@ def run_comparison(
     right = prepare_runtime(
         resolution.right,
         checkout_path=Path(right_ref.value) if right_ref.selector == "checkout" else None,
+        artifact_path=Path(right_ref.value) if right_ref.selector == "artifact" else None,
+        cache_context=profile_hash(profile),
         progress=options.progress,
     )
     options.report_progress("Right runtime ready")
@@ -153,6 +158,11 @@ def run_comparison_resolved(
                 "quick": options.quick,
                 "steps": options.steps,
                 "shapes": options.shapes,
+                "parity_receipt_id": (
+                    read_json(options.parity_receipt / "manifest.json").get("receipt_id")
+                    if options.parity_receipt is not None
+                    else None
+                ),
             },
         }
     )
@@ -206,6 +216,23 @@ def run_comparison_resolved(
             "both contract reports were recorded and no workload was executed"
         )
 
+    parity_gate = None
+    if options.parity_receipt is not None:
+        from turbobench.parity import parity_gate_for_benchmark
+
+        parity_gate = parity_gate_for_benchmark(
+            options.parity_receipt, profile, (left, right), shapes
+        )
+        if not parity_gate["passed"]:
+            raise ValueError(
+                "parity receipt cannot satisfy benchmark correctness: "
+                + "; ".join(parity_gate["errors"])
+            )
+        write_json(
+            partial / "verification" / "parity-gate.json",
+            {key: value for key, value in parity_gate.items() if key != "checks"},
+        )
+
     correctness: dict[str, Any] = {}
     action_records: dict[str, Any] = {}
     for shape in shapes:
@@ -215,15 +242,22 @@ def run_comparison_resolved(
             "correctness_sha256": trace_hash,
             "correctness_steps": profile.correctness_steps,
         }
-        options.report_progress(f"Correctness trace for shape {shape}: left provider")
-        left_trace = _trace(
-            partial, left, profile, shape, trace_actions, trace_hash, assets, side="left"
-        )
-        options.report_progress(f"Correctness trace for shape {shape}: right provider")
-        right_trace = _trace(
-            partial, right, profile, shape, trace_actions, trace_hash, assets, side="right"
-        )
-        correctness[str(shape)] = compare_traces(left_trace, right_trace, profile)
+        if parity_gate is None:
+            options.report_progress(f"Correctness trace for shape {shape}: left provider")
+            left_trace = _trace(
+                partial, left, profile, shape, trace_actions, trace_hash, assets, side="left"
+            )
+            options.report_progress(f"Correctness trace for shape {shape}: right provider")
+            right_trace = _trace(
+                partial, right, profile, shape, trace_actions, trace_hash, assets, side="right"
+            )
+            correctness[str(shape)] = compare_traces(left_trace, right_trace, profile)
+        else:
+            correctness[str(shape)] = {
+                **parity_gate["checks"][str(shape)],
+                "source": "verified-parity-receipt",
+                "receipt_id": parity_gate["receipt_id"],
+            }
         status = "passed" if correctness[str(shape)]["passed"] else "failed"
         options.report_progress(f"Correctness for shape {shape}: {status}")
     write_json(
@@ -509,6 +543,8 @@ def _base_request(
         "provider": provider.provider,
         "adapter": provider.adapter,
         "distribution": provider.distribution,
+        "import_name": provider.import_name,
+        "environment_class": provider.environment_class,
         "profile": profile.id,
         "shape": shape,
         "assets": assets,
@@ -547,6 +583,33 @@ def _trace(
         provider,
         request,
         log_path=bundle / "raw" / f"shape-{shape}" / f"trace-{side}.log",
+    )
+    write_json(path, response)
+    return response
+
+
+def _reset_distribution(
+    bundle: Path,
+    provider: ResolvedProvider,
+    profile: Profile,
+    assets: dict[str, Any],
+    *,
+    side: str,
+    seed_count: int,
+) -> dict[str, Any]:
+    path = bundle / "raw" / "reset-distribution" / f"{side}.json"
+    if path.is_file():
+        return read_json(path)
+    request = {
+        **_base_request(provider, profile, 1, assets),
+        "operation": "reset-distribution",
+        "noop_reset_max": 30,
+        "seeds": list(range(seed_count)),
+    }
+    response = invoke_runner(
+        provider,
+        request,
+        log_path=bundle / "raw" / "reset-distribution" / f"{side}.log",
     )
     write_json(path, response)
     return response

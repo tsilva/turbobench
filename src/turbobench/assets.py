@@ -149,7 +149,7 @@ def _find_game_dirs(profile: Profile) -> list[Path]:
             Path.home() / "roms" / "stable-retro" / "data" / "stable",
             Path(__file__).resolve().parents[3]
             / "env-StableRetro-turbo"
-            / "stable_retro"
+            / "env_stableretro_turbo"
             / "data"
             / "stable",
         )

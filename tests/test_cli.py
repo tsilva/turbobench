@@ -8,7 +8,7 @@ import pytest
 from turbobench.cli import build_parser, main
 
 
-def test_cli_exposes_benchmark_and_semantic_oracle_commands(capsys) -> None:
+def test_cli_exposes_benchmark_and_parity_commands(capsys) -> None:
     parser = build_parser()
     help_text = parser.format_help()
     for command in (
@@ -16,9 +16,9 @@ def test_cli_exposes_benchmark_and_semantic_oracle_commands(capsys) -> None:
         "providers",
         "profiles",
         "compare",
-        "oracle",
+        "parity",
         "verify",
-        "verify-oracle",
+        "verify-parity",
         "report",
         "promo",
     ):

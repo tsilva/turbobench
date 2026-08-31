@@ -20,6 +20,7 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/nes/supermariobros",
+        environment_class="EnvSuperMarioBrosNesTurboEmuVecEnv",
     ),
     "env-breakoutatari2600-turbo-native": ProviderDefinition(
         id="env-breakoutatari2600-turbo-native",
@@ -28,14 +29,16 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro/atari2600/breakout",
+        environment_class="BreakoutVecEnv",
     ),
     "env-stableretro-turbo": ProviderDefinition(
         id="env-stableretro-turbo",
         distribution="env-stableretro-turbo",
         import_name=PROVIDER_IMPORT_NAMES["env-stableretro-turbo"],
-        adapter="stable-retro-turbo",
+        adapter="turbo-vector-v2",
         turbo_api=2,
         lineage="stable-retro",
+        environment_class="RetroVecEnv",
     ),
     "stable-retro": ProviderDefinition(
         id="stable-retro",
@@ -48,10 +51,11 @@ BUILTIN_PROVIDERS: dict[str, ProviderDefinition] = {
         id="env-vizdoom-turbo",
         distribution="env-vizdoom-turbo",
         import_name=PROVIDER_IMPORT_NAMES["env-vizdoom-turbo"],
-        adapter="vizdoom-turbo",
+        adapter="turbo-vector-v2",
         turbo_api=2,
         build_subdirectory="turbo",
         lineage="vizdoom",
+        environment_class="EnvViZDoomTurboVecEnv",
     ),
     "vizdoom": ProviderDefinition(
         id="vizdoom",
@@ -74,6 +78,10 @@ def load_providers(*, include_plugins: bool = True) -> dict[str, ProviderDefinit
         definition = loaded() if callable(loaded) else loaded
         if not isinstance(definition, ProviderDefinition):
             raise TypeError(f"entry point {point.name!r} did not return ProviderDefinition")
+        if definition.adapter == "turbo-vector-v2" and not definition.environment_class:
+            raise ValueError(
+                f"Turbo Vector provider {definition.id!r} must declare environment_class"
+            )
         if definition.id in providers:
             raise ValueError(f"provider entry point collides with {definition.id!r}")
         providers[definition.id] = definition
@@ -95,6 +103,16 @@ def parse_provider_ref(
         if not path.is_absolute():
             raise ValueError("checkout provider refs require an absolute path")
         return ProviderRef(provider, "checkout", str(path))
+    if selector.startswith("artifact:"):
+        raw_path = selector.removeprefix("artifact:")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            raise ValueError("artifact provider refs require an absolute path")
+        if not path.is_file():
+            raise ValueError(f"provider artifact does not exist: {path}")
+        if path.suffix != ".whl":
+            raise ValueError("exact local provider artifacts must be wheel files")
+        return ProviderRef(provider, "artifact", str(path.resolve()))
     try:
         parsed = Version(selector)
     except InvalidVersion as exc:
