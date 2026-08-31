@@ -103,8 +103,6 @@ PROFILES: dict[str, Profile] = {
         promo_steps=MARIO_PROMO_ACTION_COUNT,
         completion={"kind": "info-change", "keys": ["levelHi", "levelLo"], "step": 1986},
         asset_sha256=MARIO_ROM_SHA256,
-        semantic_authority="stable-retro",
-        semantic_authority_version="1.0.1",
         native_transition_exact=True,
     ),
     "breakout/start-v2": Profile(
@@ -116,13 +114,11 @@ PROFILES: dict[str, Profile] = {
         states=("Start",),
         semantic_actions=("noop", "fire", "right", "left"),
         action_table=_BREAKOUT_ACTION_TABLE,
-        info_integer=("score", "lives"),
+        info_integer=("score", "lives", "ball_y"),
         correctness_steps=256,
         promo_kind="breakout-deterministic-v1",
         promo_steps=1_800,
         completion={"kind": "trajectory-end", "step": 1800},
-        semantic_authority="stable-retro",
-        semantic_authority_version="1.0.1",
         native_transition_exact=True,
     ),
     "breakout/start-v3": Profile(
@@ -152,6 +148,22 @@ PROFILES: dict[str, Profile] = {
         promo_kind="vizdoom-basic-deterministic-v1",
         promo_steps=2_100,
         completion={"kind": "terminal-or-info-at-least", "key": "killcount", "value": 1},
+    ),
+    "vizdoom/basic-v2": Profile(
+        id="vizdoom/basic-v2",
+        logical_environment="vizdoom-basic",
+        game="VizdoomBasic-v1",
+        providers=("env-vizdoom-turbo", "vizdoom"),
+        shapes=(1, 4),
+        states=("default",),
+        semantic_actions=("noop", "left", "right"),
+        action_table=_VIZDOOM_ACTION_TABLE,
+        info_integer=("killcount", "health", "ammo2", "episode_time"),
+        correctness_steps=256,
+        promo_kind="vizdoom-basic-deterministic-v1",
+        promo_steps=2_100,
+        completion={"kind": "terminal-or-info-at-least", "key": "killcount", "value": 1},
+        native_transition_exact=True,
     ),
 }
 
@@ -190,12 +202,12 @@ def benchmark_actions(profile: Profile, shape: int, steps: int | None = None) ->
     return ((step_index * 17 + lane_index * 7 + (step_index // 4) * 3) % action_count).astype(np.int16)
 
 
-def oracle_actions(profile: Profile, shape: int, steps: int | None = None, *, seed: int = 123) -> np.ndarray:
+def parity_actions(profile: Profile, shape: int, steps: int, *, seed: int = 123) -> np.ndarray:
     """Return a reproducible random semantic-action trace for fidelity testing."""
 
     if shape <= 0:
         raise ValueError("shape must be positive")
-    count = profile.oracle_steps if steps is None else steps
+    count = steps
     if count <= 0:
         raise ValueError("steps must be positive")
     generator = np.random.default_rng(seed)
@@ -299,14 +311,8 @@ def profile_payload(profile: Profile) -> dict[str, Any]:
         },
         "signals": {"integer": list(profile.info_integer), "float": list(profile.info_float)},
         "asset_sha256": profile.asset_sha256,
-        "oracle": {
-            "semantic_authority": profile.semantic_authority,
-            "semantic_authority_version": profile.semantic_authority_version,
+        "exact": {
             "native_transition_exact": profile.native_transition_exact,
-            "shapes": list(profile.oracle_shapes),
-            "steps": profile.oracle_steps,
-            "snapshot_prefix_steps": profile.snapshot_prefix_steps,
-            "snapshot_suffix_steps": profile.snapshot_suffix_steps,
             "allowed_representation_conversion": allowed_representation_conversion(profile),
         },
     }
@@ -363,14 +369,8 @@ def profile_toml(profile: Profile) -> str:
         lines.extend(
             (
                 "",
-                "[oracle]",
-                f"semantic_authority = {quoted(profile.semantic_authority or '')}",
-                f"semantic_authority_version = {quoted(profile.semantic_authority_version or '')}",
+                "[exact]",
                 "native_transition_exact = true",
-                f"shapes = [{', '.join(map(str, profile.oracle_shapes))}]",
-                f"steps = {profile.oracle_steps}",
-                f"snapshot_prefix_steps = {profile.snapshot_prefix_steps}",
-                f"snapshot_suffix_steps = {profile.snapshot_suffix_steps}",
                 "allowed_representation_conversion = "
                 + quoted(allowed_representation_conversion(profile)),
             )

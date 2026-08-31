@@ -5,13 +5,24 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 from turbobench.model import Gate, Profile
+from turbobench.util import canonical_json_hash
 
 FLOAT_TOLERANCE = 1e-6
 
 
-def compare_traces(left: dict[str, Any], right: dict[str, Any], profile: Profile) -> dict[str, Any]:
+def compare_traces(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    profile: Profile,
+    *,
+    require_snapshot: bool = False,
+) -> dict[str, Any]:
     mismatches: list[dict[str, Any]] = []
+    _required_trace_evidence(mismatches, "left", left, require_snapshot=require_snapshot)
+    _required_trace_evidence(mismatches, "right", right, require_snapshot=require_snapshot)
     _same(mismatches, "schema", left.get("schema"), right.get("schema"))
     _same(mismatches, "profile", left.get("profile"), right.get("profile"))
     _same(mismatches, "shape", left.get("shape"), right.get("shape"))
@@ -62,6 +73,19 @@ def compare_traces(left: dict[str, Any], right: dict[str, Any], profile: Profile
         _infos(mismatches, f"{prefix}.infos", left_step.get("infos", []), right_step.get("infos", []), profile)
     _same(mismatches, "reset_points", left.get("reset_points"), right.get("reset_points"))
     _same(mismatches, "completion_step", left.get("completion_step"), right.get("completion_step"))
+    expected_actions = [list(labels) for labels in profile.action_table.values()]
+    _same(
+        mismatches,
+        "environment.action_identity.left",
+        left.get("environment", {}).get("action_table"),
+        expected_actions,
+    )
+    _same(
+        mismatches,
+        "environment.action_identity.right",
+        right.get("environment", {}).get("action_table"),
+        expected_actions,
+    )
     _same(
         mismatches,
         "snapshot_continuation",
@@ -79,6 +103,7 @@ def compare_traces(left: dict[str, Any], right: dict[str, Any], profile: Profile
                 }
             )
     gates = [
+        Gate("exact action identity", not _has(mismatches, "action_identity"), "profile order and labels"),
         Gate("exact policy observations", not _has(mismatches, "observation_sha256"), "all lane/step hashes"),
         Gate("exact raw RGB frames", not _has(mismatches, "raw_frame"), "all lane/step hashes and shapes"),
         Gate(
@@ -144,6 +169,143 @@ def compare_replays(left: dict[str, Any], right: dict[str, Any], profile: Profil
         "completion_step": left.get("completion_step"),
         "frame_count": left.get("frame_count"),
     }
+
+
+def compare_reset_distributions(
+    authority: dict[str, Any], candidate: dict[str, Any], *, maximum_cdf_distance: float = 0.15
+) -> dict[str, Any]:
+    """Compare reset randomness statistically and reset outcomes exactly by noop count."""
+
+    errors: list[dict[str, Any]] = []
+    maximum = int(authority.get("maximum", 0))
+    if maximum <= 0 or candidate.get("maximum") != maximum:
+        errors.append({"field": "maximum", "authority": maximum, "candidate": candidate.get("maximum")})
+    authority_samples = list(authority.get("samples", []))
+    candidate_samples = list(candidate.get("samples", []))
+    if len(authority_samples) < 32 or len(authority_samples) != len(candidate_samples):
+        errors.append(
+            {
+                "field": "sample_count",
+                "authority": len(authority_samples),
+                "candidate": len(candidate_samples),
+            }
+        )
+    authority_counts = np.asarray([item.get("count", -1) for item in authority_samples], dtype=np.int64)
+    candidate_counts = np.asarray([item.get("count", -1) for item in candidate_samples], dtype=np.int64)
+    if maximum > 0 and (
+        np.any((authority_counts < 1) | (authority_counts > maximum))
+        or np.any((candidate_counts < 1) | (candidate_counts > maximum))
+    ):
+        errors.append({"field": "count_bounds", "authority": "1..maximum", "candidate": "1..maximum"})
+    cdf_distance = 1.0
+    if maximum > 0 and authority_counts.size and candidate_counts.size:
+        authority_histogram = np.bincount(authority_counts, minlength=maximum + 1)[1 : maximum + 1]
+        candidate_histogram = np.bincount(candidate_counts, minlength=maximum + 1)[1 : maximum + 1]
+        authority_cdf = np.cumsum(authority_histogram) / authority_counts.size
+        candidate_cdf = np.cumsum(candidate_histogram) / candidate_counts.size
+        cdf_distance = float(np.max(np.abs(authority_cdf - candidate_cdf)))
+        if cdf_distance > maximum_cdf_distance:
+            errors.append(
+                {
+                    "field": "cdf_distance",
+                    "authority": maximum_cdf_distance,
+                    "candidate": cdf_distance,
+                }
+            )
+    def outcomes(samples: list[dict[str, Any]]) -> dict[int, set[str]]:
+        grouped: dict[int, set[str]] = {}
+        for sample in samples:
+            grouped.setdefault(int(sample.get("count", -1)), set()).add(
+                canonical_json_hash(
+                    {
+                        "observation_sha256": sample.get("observation_sha256"),
+                        "raw_frame_sha256": sample.get("raw_frame_sha256"),
+                        "infos": sample.get("infos"),
+                    }
+                )
+            )
+        return grouped
+
+    authority_outcomes = outcomes(authority_samples)
+    candidate_outcomes = outcomes(candidate_samples)
+    complete_coverage = set(authority_outcomes) == set(range(1, maximum + 1)) and set(
+        candidate_outcomes
+    ) == set(range(1, maximum + 1))
+    if not complete_coverage:
+        errors.append(
+            {
+                "field": "complete_count_coverage",
+                "authority_counts": sorted(authority_outcomes),
+                "candidate_counts": sorted(candidate_outcomes),
+            }
+        )
+    if authority_outcomes != candidate_outcomes:
+        errors.append(
+            {
+                "field": "outcomes_by_noop_count",
+                "authority_counts": sorted(authority_outcomes),
+                "candidate_counts": sorted(candidate_outcomes),
+            }
+        )
+    return {
+        "passed": not errors,
+        "sample_count": min(len(authority_samples), len(candidate_samples)),
+        "maximum": maximum,
+        "cdf_distance": cdf_distance,
+        "maximum_cdf_distance": maximum_cdf_distance,
+        "complete_count_coverage": complete_coverage,
+        "first_mismatches": errors[:20],
+    }
+
+
+def _required_trace_evidence(
+    mismatches: list[dict[str, Any]],
+    side: str,
+    trace: dict[str, Any],
+    *,
+    require_snapshot: bool,
+) -> None:
+    initial = trace.get("initial")
+    if not isinstance(initial, dict):
+        mismatches.append({"field": f"evidence.{side}.initial", "left": "required", "right": None})
+        return
+    for field in ("observation_sha256", "raw_frame_sha256", "raw_frame_shapes", "infos"):
+        if field not in initial or not isinstance(initial[field], list) or not initial[field]:
+            mismatches.append(
+                {"field": f"evidence.{side}.initial.{field}", "left": "required", "right": initial.get(field)}
+            )
+    steps = trace.get("steps")
+    if not isinstance(steps, list) or not steps:
+        mismatches.append({"field": f"evidence.{side}.steps", "left": "required", "right": steps})
+    else:
+        required = {
+            "observation_sha256",
+            "raw_frame_sha256",
+            "rewards",
+            "terminations",
+            "truncations",
+            "infos",
+            "reset_lanes",
+        }
+        for index, step in enumerate(steps):
+            missing = sorted(required - set(step)) if isinstance(step, dict) else sorted(required)
+            if missing:
+                mismatches.append(
+                    {
+                        "field": f"evidence.{side}.steps[{index}]",
+                        "left": "required",
+                        "right": missing,
+                    }
+                )
+                break
+    if require_snapshot and not isinstance(trace.get("snapshot_continuation"), dict):
+        mismatches.append(
+            {
+                "field": f"evidence.{side}.snapshot_continuation",
+                "left": "required",
+                "right": trace.get("snapshot_continuation"),
+            }
+        )
 
 
 def _same(mismatches: list[dict[str, Any]], field: str, left: Any, right: Any) -> None:

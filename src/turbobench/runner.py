@@ -33,7 +33,6 @@ from turbobench.profiles import (
     allowed_representation_conversion,
     get_profile,
 )
-from turbobench.provider_imports import PROVIDER_IMPORT_NAMES
 from turbobench.turbo_api import (
     TurboContractError,
     declared_api_version,
@@ -63,6 +62,7 @@ class ScalarWorkerConfig:
     native_transition_exact: bool = False
     rom_path: str | None = None
     state_paths: tuple[tuple[str, str], ...] = ()
+    noop_reset_max: int = 0
 
 
 _PADDLE_MEASURE_LOWER_BOUNDS = (
@@ -272,7 +272,8 @@ class ScalarPreprocessingEnv:
         self._channels = channels
         self._stack = np.empty((channels * config.frame_stack, *config.resize), dtype=np.uint8)
         self._raw_frame: np.ndarray | None = None
-        self._oracle_action_history: list[np.ndarray] = []
+        self._parity_action_history: list[np.ndarray] = []
+        self._parity_reset_seed: int | None = None
         self._restoring_snapshot = False
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=self._stack.shape, dtype=np.uint8
@@ -297,7 +298,8 @@ class ScalarPreprocessingEnv:
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if not self._restoring_snapshot:
-            self._oracle_action_history.clear()
+            self._parity_action_history.clear()
+            self._parity_reset_seed = seed
         if self._paddle_normalizer is not None:
             self._paddle_normalizer.reset()
         observation, info = self.env.reset(seed=seed, options=options)
@@ -323,12 +325,33 @@ class ScalarPreprocessingEnv:
                     info = step_info
                 self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
                 self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
+        noop_count = 0
+        if self.config.noop_reset_max:
+            if seed is None:
+                raise ValueError("seeded reset distribution requires an explicit seed")
+            noop_count = int(
+                np.random.default_rng(seed).integers(
+                    1, self.config.noop_reset_max + 1, dtype=np.uint64
+                )
+            )
+            neutral = np.zeros(self.action_space.shape, dtype=np.int8)
+            for _ in range(noop_count):
+                observation, _reward, terminated, truncated, step_info = self.env.step(neutral)
+                if terminated or truncated:
+                    observation, step_info = self.env.reset(seed=seed)
+                if step_info:
+                    info = step_info
+            self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
+            if self._paddle_normalizer is not None:
+                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         if not info:
             data = getattr(self.env.unwrapped, "data", None)
             if data is not None and hasattr(data, "lookup_all"):
                 data.update_ram()
                 info = dict(data.lookup_all())
         info = self._semantic_info(info)
+        if self.config.noop_reset_max:
+            info["noop_reset_count"] = noop_count
         assert self._raw_frame is not None
         frame = preprocess_frame(self._raw_frame, self.config)
         for offset in range(0, self._stack.shape[0], self._channels):
@@ -337,7 +360,7 @@ class ScalarPreprocessingEnv:
 
     def step(self, action: Any):
         if not self._restoring_snapshot:
-            self._oracle_action_history.append(np.asarray(action).copy())
+            self._parity_action_history.append(np.asarray(action).copy())
         total_reward = 0.0
         terminated = False
         truncated = False
@@ -390,12 +413,6 @@ class ScalarPreprocessingEnv:
     def render(self) -> np.ndarray:
         if self._raw_frame is None:
             raise RuntimeError("render requested before reset")
-        if (
-            self.config.native_transition_exact
-            and self.config.provider == "stable-retro"
-            and self.config.game.startswith("Breakout-Atari2600")
-        ):
-            return _canonical_stella_rgb(self._raw_frame)
         return self._raw_frame.copy()
 
     def ram(self) -> np.ndarray:
@@ -404,30 +421,35 @@ class ScalarPreprocessingEnv:
             raise NotImplementedError("scalar provider does not expose emulator RAM")
         return np.asarray(getter(), dtype=np.uint8).copy()
 
-    def capture_oracle_snapshot(
+    def capture_parity_snapshot(
         self,
-    ) -> tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
+    ) -> tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
         if self._raw_frame is None:
             raise RuntimeError("cannot capture a snapshot before reset")
         return (
-            tuple(action.copy() for action in self._oracle_action_history),
+            self._parity_reset_seed,
+            tuple(action.copy() for action in self._parity_action_history),
             self._stack.copy(),
             self._raw_frame.copy(),
         )
 
-    def restore_oracle_snapshots(
+    def restore_parity_snapshots(
         self,
-        snapshots: Sequence[tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]],
+        snapshots: Sequence[
+            tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]
+        ],
     ) -> bool:
-        history, expected_stack, expected_raw = snapshots[self.config.worker_index]
+        reset_seed, history, expected_stack, expected_raw = snapshots[
+            self.config.worker_index
+        ]
         self._restoring_snapshot = True
         try:
-            self.reset()
+            self.reset(seed=reset_seed)
             for action in history:
                 self.step(action)
         finally:
             self._restoring_snapshot = False
-        self._oracle_action_history = [action.copy() for action in history]
+        self._parity_action_history = [action.copy() for action in history]
         if not np.array_equal(self._stack, expected_stack) or not np.array_equal(
             self._raw_frame, expected_raw
         ):
@@ -502,7 +524,7 @@ def _create_original_retro_integration(
 
     Only the verified ROM and public state fixtures are overlaid. data.json and
     scenario.json always come from the installed authority package so ambient
-    RETRO_DATA_PATH content cannot alter the semantic oracle.
+    RETRO_DATA_PATH content cannot alter parity evidence.
     """
 
     package_root = Path(retro.__file__).resolve().parent
@@ -515,6 +537,11 @@ def _create_original_retro_integration(
     target_root = Path(worker_tempdir.name)
     target = target_root / config.game
     shutil.copytree(source, target)
+    if config.game.startswith("Breakout-Atari2600") and "ball_y" in config.info_keys:
+        info_path = target / "data.json"
+        payload = read_json(info_path)
+        payload.setdefault("info", {})["ball_y"] = {"address": 229, "type": "|u1"}
+        write_json(info_path, payload)
     if config.rom_path:
         rom_path = Path(config.rom_path).resolve()
         for packaged_rom in target.glob("rom.*"):
@@ -552,6 +579,8 @@ class Adapter:
         self.overlay = overlay
         self.num_envs = int(env.num_envs)
         self._terminal_mask = np.zeros(self.num_envs, dtype=np.bool_)
+        self._initial_seed: int | None = None
+        self._reset_generations = np.zeros(self.num_envs, dtype=np.uint64)
         self._render_cache: list[np.ndarray] | None = None
         self._table = tuple(profile.action_table.values())
         self._table_index = {_labels_key(labels): index for index, labels in enumerate(self._table)}
@@ -582,12 +611,28 @@ class Adapter:
 
     def initial_reset(self, seed: int) -> tuple[np.ndarray, dict[str, Any]]:
         options = self._reset_options(np.ones(self.num_envs, dtype=np.bool_), initial=True)
+        self._initial_seed = int(seed)
+        self._reset_generations.fill(0)
         self._terminal_mask.fill(False)
         self._render_cache = None
         return self.env.reset(seed=seed, options=options)
 
     def selective_reset(self, mask: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
-        result = self.env.reset(options=self._reset_options(mask))
+        if self._initial_seed is None:
+            raise RuntimeError("selective reset requested before the initial seeded reset")
+        self._reset_generations[mask] += 1
+        seeds = [
+            (
+                self._initial_seed
+                + int(self._reset_generations[lane]) * self.num_envs
+                + lane
+            )
+            % (2**32)
+            if mask[lane]
+            else None
+            for lane in range(self.num_envs)
+        ]
+        result = self.env.reset(seed=seeds, options=self._reset_options(mask))
         self._terminal_mask[mask] = False
         return result
 
@@ -637,7 +682,7 @@ class Adapter:
         else:
             raw = self.env.call("render")
         frames = [
-            _semantic_raw_rgb(frame, self.profile)
+            _semantic_raw_rgb(frame, self.profile, self.provider)
             if self.profile.native_transition_exact
             else _comparison_raw_rgb(frame, self.profile, self.provider)
             for frame in raw
@@ -681,7 +726,7 @@ class Adapter:
         mask = np.ones(self.num_envs, dtype=np.bool_)
         if self.native_discrete:
             return self.env.capture_snapshots(mask)
-        return tuple(self.env.call("capture_oracle_snapshot"))
+        return tuple(self.env.call("capture_parity_snapshot"))
 
     def restore_snapshots(self, snapshots: Any) -> None:
         self._terminal_mask.fill(False)
@@ -695,7 +740,7 @@ class Adapter:
                 }
             )
         else:
-            restored = self.env.call("restore_oracle_snapshots", snapshots)
+            restored = self.env.call("restore_parity_snapshots", snapshots)
             if not all(restored):
                 raise RuntimeError("scalar snapshot restoration was incomplete")
 
@@ -754,7 +799,6 @@ class Adapter:
                 if self.profile.logical_environment == "vizdoom-basic"
                 else "identity"
             ),
-            "semantic_authority": self.profile.semantic_authority,
             "native_transition_exact": self.profile.native_transition_exact,
             "allowed_representation_conversion": allowed_representation_conversion(
                 self.profile
@@ -1274,7 +1318,7 @@ def _comparison_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarr
     return _canonical_raw_rgb(value, profile)
 
 
-def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
+def _semantic_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray:
     """Decode public renders to the emulator's lossless native pixel code.
 
     The NES core is RGB565. Stable Retro expands those bits to RGB888 while
@@ -1284,6 +1328,11 @@ def _semantic_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
     """
 
     value = normalize_rgb(frame)
+    if profile.logical_environment == "breakout" and provider in {
+        "stable-retro",
+        "env-stableretro-turbo",
+    }:
+        return _canonical_stella_rgb(value)
     if profile.logical_environment == "supermario":
         return np.bitwise_and(value, np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
     return value
@@ -1344,51 +1393,52 @@ def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | Fake
     assets = request.get("assets", {})
     if request.get("adapter") == "fake":
         return FakeAdapter(profile, provider, shape, float(request.get("fake_speed", 1.0)))
-    common = _turbo_v2_options(profile, shape, frame_skip)
+    noop_reset_max = int(request.get("noop_reset_max", 0))
+    common = _turbo_v2_options(profile, shape, frame_skip, noop_reset_max=noop_reset_max)
     rom_path = assets.get("rom_path")
-    if provider == "env-supermariobrosnes-turbo-emu":
-        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
-        common["rom_path"] = rom_path
-        env, report = _construct_turbo_environment(
-            module.SuperMarioBrosNesTurboVecEnv, provider, profile.game, common
-        )
-        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "env-breakoutatari2600-turbo-native":
-        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
-        env, report = _construct_turbo_environment(
-            module.BreakoutVecEnv, provider, profile.game, common
-        )
-        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "env-stableretro-turbo":
-        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
-        if profile.native_transition_exact:
+    if request.get("adapter") == "turbo-vector-v2":
+        module = importlib.import_module(str(request["import_name"]))
+        overlay: tempfile.TemporaryDirectory[str] | None = None
+        if provider in {"env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"}:
+            common["rom_path"] = rom_path
+        if provider == "env-stableretro-turbo" and profile.native_transition_exact:
             common["state_catalog"] = [
                 assets.get("state_paths", {}).get(state, state) for state in profile.states
             ]
-        common["rom_path"] = rom_path
-        common["info"] = None if profile.native_transition_exact else assets.get("info_schema_path")
-        common["scenario"] = (
-            None if profile.native_transition_exact else assets.get("scenario_path")
-        )
+        if provider == "env-stableretro-turbo":
+            if profile.native_transition_exact and profile.logical_environment == "breakout":
+                overlay, common["info"] = _augmented_breakout_info(module, profile)
+            else:
+                common["info"] = (
+                    None if profile.native_transition_exact else assets.get("info_schema_path")
+                )
+            common["scenario"] = (
+                None if profile.native_transition_exact else assets.get("scenario_path")
+            )
+        if provider == "env-vizdoom-turbo":
+            common["game_variables"] = [
+                key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
+            ]
+        environment_type = getattr(module, str(request["environment_class"]))
         env, report = _construct_turbo_environment(
-            module.RetroVecEnv, provider, profile.game, common
+            environment_type, provider, profile.game, common
         )
-        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
-    if provider == "env-vizdoom-turbo":
-        module = importlib.import_module(PROVIDER_IMPORT_NAMES[provider])
-        common["game_variables"] = [
-            key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
-        ]
-        env, report = _construct_turbo_environment(
-            module.VizdoomTurboVecEnv, provider, profile.game, common
+        return Adapter(
+            env,
+            profile,
+            provider,
+            native_discrete=True,
+            contract_report=report,
+            overlay=overlay,
         )
-        return Adapter(env, profile, provider, native_discrete=True, contract_report=report)
     if provider in {"stable-retro", "vizdoom"}:
         return _create_scalar_adapter(request, profile, frame_skip)
     raise ValueError(f"no built-in adapter for {provider!r}")
 
 
-def _turbo_v2_options(profile: Profile, shape: int, frame_skip: int) -> dict[str, Any]:
+def _turbo_v2_options(
+    profile: Profile, shape: int, frame_skip: int, *, noop_reset_max: int = 0
+) -> dict[str, Any]:
     """Spell out every shared benchmark semantic independently of API defaults."""
 
     return {
@@ -1415,7 +1465,7 @@ def _turbo_v2_options(profile: Profile, shape: int, frame_skip: int) -> dict[str
         "frame_stack": profile.frame_stack,
         "maxpool_last_two": profile.maxpool_last_two,
         "sticky_action_prob": 0.0,
-        "noop_reset_max": 0,
+        "noop_reset_max": noop_reset_max,
         "use_fire_reset": False,
         "reward_clip": False,
         "info_filter": {"mode": "all", "keys": list(profile.info_integer + profile.info_float)},
@@ -1424,6 +1474,26 @@ def _turbo_v2_options(profile: Profile, shape: int, frame_skip: int) -> dict[str
         "state_catalog": list(profile.states),
         "render_mode": "rgb_array",
     }
+
+
+def _augmented_breakout_info(
+    module: Any, profile: Profile
+) -> tuple[tempfile.TemporaryDirectory[str], str]:
+    source = (
+        Path(module.__file__).resolve().parent
+        / "data"
+        / "stable"
+        / profile.game
+        / "data.json"
+    )
+    if not source.is_file():
+        raise FileNotFoundError(f"Stable Retro Turbo data schema is missing: {source.name}")
+    temporary = tempfile.TemporaryDirectory(prefix="turbobench-breakout-info-")
+    target = Path(temporary.name) / "data.json"
+    payload = read_json(source)
+    payload.setdefault("info", {})["ball_y"] = {"address": 229, "type": "|u1"}
+    write_json(target, payload)
+    return temporary, str(target)
 
 
 def _construct_turbo_environment(
@@ -1489,6 +1559,7 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
                 (str(state), str(path))
                 for state, path in dict(assets.get("state_paths", {})).items()
             ),
+            noop_reset_max=int(request.get("noop_reset_max", 0)),
         )
         for lane in range(shape)
     ]
@@ -1758,6 +1829,42 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
         adapter.close()
 
 
+def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    maximum = int(request.get("noop_reset_max", 30))
+    seeds = tuple(map(int, request.get("seeds", range(256))))
+    if profile.logical_environment != "breakout" or maximum <= 0 or len(seeds) < 32:
+        raise ValueError("reset distribution requires Breakout, a positive maximum, and 32 seeds")
+    adapter = _create_adapter({**request, "noop_reset_max": maximum}, profile)
+    try:
+        if adapter.num_envs != 1:
+            raise ValueError("reset distribution uses one lane")
+        samples: list[dict[str, Any]] = []
+        for seed in seeds:
+            observation, infos = adapter.initial_reset(seed)
+            selected = _selected_infos(infos, profile, 1)[0]
+            raw_count = infos.get("noop_reset_count")
+            count = int(np.asarray(raw_count).reshape(-1)[0])
+            frame = adapter.render_frames()[0]
+            samples.append(
+                {
+                    "seed": seed,
+                    "count": count,
+                    "observation_sha256": _array_hashes(observation)[0],
+                    "raw_frame_sha256": _frame_hashes([frame])[0],
+                    "infos": selected,
+                }
+            )
+        return {
+            "schema": "turbobench.reset-distribution/v1",
+            "provider": request["provider"],
+            "profile": profile.id,
+            "maximum": maximum,
+            "samples": samples,
+        }
+    finally:
+        adapter.close()
+
+
 def run_contract(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
     adapter = _create_adapter(request, profile)
     try:
@@ -1903,6 +2010,8 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
             payload = run_trace(request, profile)
         elif operation == "benchmark":
             payload = run_benchmark(request, profile)
+        elif operation == "reset-distribution":
+            payload = run_reset_distribution(request, profile)
         elif operation == "promo":
             payload = run_promo_replay(request, profile)
         elif operation == "probe":

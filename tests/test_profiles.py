@@ -5,6 +5,7 @@ import tomllib
 
 import numpy as np
 
+from turbobench.parity_profiles import load_parity_profiles, parity_profile_toml
 from turbobench.profiles import (
     BREAKOUT_RGB_TRANSPORT_CONVERSION,
     MARIO_BUTTON_ORDER,
@@ -15,7 +16,7 @@ from turbobench.profiles import (
     allowed_representation_conversion,
     benchmark_actions,
     mario_promo_actions,
-    oracle_actions,
+    parity_actions,
     profile_hash,
     profile_payload,
     profile_toml,
@@ -61,38 +62,43 @@ def test_current_breakout_benchmark_supports_upstream_and_turbo_references() -> 
     assert not profile.native_transition_exact
 
 
-def test_v2_profiles_are_exact_stable_retro_oracles() -> None:
+def test_v2_profiles_have_declarative_exact_parity_commitments() -> None:
     assert {profile_id for profile_id in PROFILES if profile_id.endswith("-v2")} == {
         "supermario/canonical-v2",
         "breakout/start-v2",
+        "vizdoom/basic-v2",
     }
-    for profile_id in ("supermario/canonical-v2", "breakout/start-v2"):
+    commitments = load_parity_profiles()
+    assert set(commitments) == {
+        "supermario/canonical-v2",
+        "breakout/start-v2",
+        "vizdoom/basic-v2",
+    }
+    for profile_id in commitments:
         profile = PROFILES[profile_id]
-        assert profile.semantic_authority == "stable-retro"
         assert profile.native_transition_exact
         assert profile.shapes == (1, 4)
-        assert profile.oracle_shapes == (1, 4)
-        assert profile.oracle_steps == 4_096
-        payload = profile_payload(profile)
-        assert payload["oracle"]["native_transition_exact"]
-        assert tomllib.loads(profile_toml(profile))["schema"] == "turbobench.profile/v2"
+        commitment = commitments[profile_id]
+        assert commitment.shapes == (1, 4)
+        assert commitment.steps == 4_096
+        assert tomllib.loads(parity_profile_toml(commitment))["schema"] == "turbobench.parity-profile/v1"
     breakout = PROFILES["breakout/start-v2"]
     assert (
         allowed_representation_conversion(breakout)
         == BREAKOUT_RGB_TRANSPORT_CONVERSION
     )
     assert (
-        profile_payload(breakout)["oracle"]["allowed_representation_conversion"]
+        profile_payload(breakout)["exact"]["allowed_representation_conversion"]
         == BREAKOUT_RGB_TRANSPORT_CONVERSION
     )
 
 
-def test_oracle_actions_are_seeded_random_with_directed_prefix() -> None:
+def test_parity_actions_are_seeded_random_with_directed_prefix() -> None:
     profile = PROFILES["breakout/start-v2"]
-    first = oracle_actions(profile, 4, 64, seed=123)
-    second = oracle_actions(profile, 4, 64, seed=123)
+    first = parity_actions(profile, 4, 64, seed=123)
+    second = parity_actions(profile, 4, 64, seed=123)
     np.testing.assert_array_equal(first, second)
-    assert not np.array_equal(first, oracle_actions(profile, 4, 64, seed=124))
+    assert not np.array_equal(first, parity_actions(profile, 4, 64, seed=124))
     assert first.shape == (64, 4)
     assert set(first[:, 0]) == set(range(len(profile.semantic_actions)))
 

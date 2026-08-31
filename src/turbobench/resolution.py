@@ -12,6 +12,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
 from turbobench.model import Profile, ProviderDefinition, ProviderRef, ResolvedProvider
@@ -176,6 +177,7 @@ def _release_to_resolved(
         release_files=candidate.files,
         compatibility_lineage=lineage,
         diagnostic_reasons=diagnostic_reasons,
+        environment_class=definition.environment_class,
     )
 
 
@@ -208,6 +210,12 @@ def resolve_pair(
                 Path(reference.value),
                 python_minor=python_minor,
                 allow_dirty=allow_dirty,
+            )
+            excluded[reference.provider] = ()
+            continue
+        if reference.selector == "artifact":
+            resolved[side] = resolve_artifact(
+                definition, Path(reference.value), python_minor=python_minor
             )
             excluded[reference.provider] = ()
             continue
@@ -347,11 +355,11 @@ def resolve_checkout(
     commit = _git(root, "rev-parse", "HEAD")
     tree = _git(root, "rev-parse", "HEAD^{tree}")
     dirty_lines = _git(root, "status", "--porcelain=v1", "--untracked-files=all").splitlines()
-    reasons: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ("checkout source",)
     if dirty_lines and not allow_dirty:
         raise ValueError(f"checkout {root} is dirty; clean it or use a diagnostic override")
     if dirty_lines:
-        reasons = ("dirty checkout override",)
+        reasons = ("checkout source", "dirty checkout override")
         artifact_hash = _worktree_hash(root)
         source_identity = f"dirty-checkout:{commit}:{artifact_hash}"
     else:
@@ -381,6 +389,59 @@ def resolve_checkout(
         tree=tree,
         compatibility_lineage=lineage,
         diagnostic_reasons=reasons,
+        environment_class=definition.environment_class,
+    )
+
+
+def resolve_artifact(
+    definition: ProviderDefinition,
+    artifact: Path,
+    *,
+    python_minor: str,
+) -> ResolvedProvider:
+    """Resolve an exact local wheel without copying its machine-local path into evidence."""
+
+    path = artifact.expanduser().resolve()
+    if not path.is_file() or path.suffix != ".whl":
+        raise ValueError(f"exact provider artifact must be an existing wheel: {path}")
+    try:
+        distribution, version, _build, _tags = parse_wheel_filename(path.name)
+    except ValueError as exc:
+        raise ValueError(f"invalid provider wheel filename: {path.name}") from exc
+    if canonicalize_name(distribution) != canonicalize_name(definition.distribution):
+        raise ValueError(
+            f"wheel distribution {distribution!r} does not match {definition.distribution!r}"
+        )
+    if version.is_prerelease:
+        raise ValueError("prerelease provider artifacts are not eligible")
+    digest = sha256_file(path)
+    selected = {
+        "filename": path.name,
+        "packagetype": "bdist_wheel",
+        "python_version": "wheel",
+        "sha256": digest,
+        "size": path.stat().st_size,
+    }
+    lineage = (
+        lineage_version(str(version))
+        if definition.lineage in {"stable-retro", "vizdoom"}
+        else definition.lineage
+    )
+    return ResolvedProvider(
+        provider=definition.id,
+        adapter=definition.adapter,
+        distribution=definition.distribution,
+        import_name=definition.import_name,
+        version=str(version),
+        source_kind="artifact",
+        source_identity=f"wheel:sha256:{digest}:{path.name}",
+        artifact_sha256=digest,
+        python_minor=python_minor,
+        build_root=definition.build_subdirectory,
+        release_files=(selected,),
+        selected_artifact=selected,
+        compatibility_lineage=lineage,
+        environment_class=definition.environment_class,
     )
 
 
@@ -399,15 +460,57 @@ def _git(root: Path, *args: str) -> str:
 
 def _worktree_hash(root: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts:
-            continue
-        relative = path.relative_to(root).as_posix()
-        digest.update(relative.encode())
+    repositories = [(Path(), root, _git(root, "rev-parse", "HEAD"))]
+    repositories.extend(_submodule_worktrees(root))
+    for prefix, repository, commit in repositories:
+        digest.update(prefix.as_posix().encode())
+        digest.update(b"\0commit\0")
+        digest.update(commit.encode())
         digest.update(b"\0")
-        digest.update(sha256_file(path).encode())
-        digest.update(b"\0")
+        listed = _git(
+            repository, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
+        )
+        for relative in sorted(item for item in listed.split("\0") if item):
+            path = repository / relative
+            if not path.is_file():
+                continue
+            combined = prefix / relative
+            digest.update(combined.as_posix().encode())
+            digest.update(b"\0")
+            digest.update(sha256_file(path).encode())
+            digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _submodule_worktrees(root: Path) -> list[tuple[Path, Path, str]]:
+    process = subprocess.run(
+        ["git", "submodule", "status", "--recursive"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if process.returncode:
+        raise ValueError(process.stderr.strip() or "could not inspect checkout submodules")
+    records: list[tuple[Path, Path, str]] = []
+    for raw in process.stdout.splitlines():
+        if not raw:
+            continue
+        status = raw[0]
+        fields = raw[1:].split(maxsplit=2)
+        if len(fields) < 2:
+            raise ValueError(f"could not parse submodule status: {raw!r}")
+        commit, relative_text = fields[:2]
+        relative = Path(relative_text)
+        if status == "-":
+            raise ValueError(f"checkout submodule is not initialized: {relative_text}")
+        if status == "U" or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"invalid checkout submodule: {relative_text}")
+        repository = (root / relative).resolve()
+        if not repository.is_dir():
+            raise ValueError(f"checkout submodule is unavailable: {relative_text}")
+        records.append((relative, repository, commit))
+    return records
 
 
 def _checkout_version(build_root: Path, root: Path, definition: ProviderDefinition) -> str:
