@@ -1679,6 +1679,17 @@ def _snapshot_mismatches(
     return mismatches
 
 
+def _snapshot_episode_window(
+    trace: Sequence[Mapping[str, Any]], prefix_steps: int, suffix_steps: int
+) -> list[Mapping[str, Any]]:
+    """Return the requested continuation through its first lifecycle boundary."""
+    expected = list(trace[prefix_steps : prefix_steps + suffix_steps])
+    for index, record in enumerate(expected):
+        if record.get("reset_lanes"):
+            return expected[: index + 1]
+    return expected
+
+
 def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
     adapter = _create_adapter(request, profile)
     try:
@@ -1728,11 +1739,11 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
 
         snapshot_continuation = None
         if snapshots is not None:
-            expected = trace[snapshot_prefix : snapshot_prefix + snapshot_suffix]
+            expected = _snapshot_episode_window(trace, snapshot_prefix, snapshot_suffix)
             adapter.restore_snapshots(snapshots)
             replayed: list[dict[str, Any]] = []
             for offset, action in enumerate(
-                prepared[snapshot_prefix : snapshot_prefix + snapshot_suffix],
+                prepared[snapshot_prefix : snapshot_prefix + len(expected)],
                 start=snapshot_prefix + 1,
             ):
                 record, done = _trace_transition(
@@ -1748,7 +1759,8 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                     adapter.render_frames()
             snapshot_continuation = {
                 "prefix_steps": snapshot_prefix,
-                "suffix_steps": snapshot_suffix,
+                "requested_suffix_steps": snapshot_suffix,
+                "suffix_steps": len(expected),
                 "uninterrupted_sha256": canonical_json_hash(expected),
                 "replayed_sha256": canonical_json_hash(replayed),
                 "replay_exact": expected == replayed,

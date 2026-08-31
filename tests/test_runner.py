@@ -28,12 +28,24 @@ from turbobench.runner import (
     _needs_legacy_breakout_paddle_normalization,
     _normalize_scalar_rgb,
     _semantic_raw_rgb,
+    _snapshot_episode_window,
     _turbo_v2_options,
     execute,
     fractional_area_resize,
     integer_area_resize,
     preprocess_frame,
 )
+
+
+def test_snapshot_continuation_stops_after_the_first_lifecycle_boundary() -> None:
+    trace = [
+        {"step": 1, "reset_lanes": []},
+        {"step": 2, "reset_lanes": [0]},
+        {"step": 3, "reset_lanes": []},
+    ]
+
+    assert _snapshot_episode_window(trace, 0, 3) == trace[:2]
+    assert _snapshot_episode_window(trace, 2, 1) == trace[2:]
 
 
 def test_turbo_provider_options_spell_out_every_benchmark_semantic() -> None:
