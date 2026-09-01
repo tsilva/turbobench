@@ -244,7 +244,11 @@ payload = json.loads(path.read_text())
 print(urllib.parse.unquote(urllib.parse.urlparse(payload['url']).path))
 """
     artifact = Path(
-        _run([str(python), "-c", code, provider.distribution], capture=True).stdout.strip()
+        _run(
+            [str(python), "-c", code, provider.distribution],
+            capture=True,
+            cwd=python.parent.parent,
+        ).stdout.strip()
     )
     actual = sha256_file(artifact)
     selected = next(
@@ -478,14 +482,22 @@ for file in sorted(dist.files or [], key=str):
 print(json.dumps({'version': dist.version, 'distribution_tree_sha256': h.hexdigest(), 'import_file': pathlib.Path(module.__file__).name}))
 """
     process = _run(
-        [str(python), "-c", code, provider.distribution, provider.import_name], capture=True
+        [str(python), "-c", code, provider.distribution, provider.import_name],
+        capture=True,
+        cwd=python.parent.parent,
     )
     return json.loads(process.stdout)
 
 
-def _run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str],
+    *,
+    capture: bool = False,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
+        cwd=cwd,
         text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
