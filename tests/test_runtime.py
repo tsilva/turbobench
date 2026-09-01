@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from turbobench.providers import BUILTIN_PROVIDERS
 from turbobench.resolution import fake_resolved, resolve_checkout
@@ -9,11 +11,31 @@ from turbobench.runner_client import _offline_environment
 from turbobench.runtime import (
     _artifact_score,
     _portable_artifact,
+    _probe_install,
     _snapshot_checkout,
     prepare_runtime,
     runtime_id,
     runtimes_are_isolated,
 )
+
+
+def test_install_probe_ignores_caller_import_shadow(tmp_path: Path, monkeypatch) -> None:
+    caller = tmp_path / "caller"
+    shadow = caller / "turbobench"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text(
+        "raise RuntimeError('imported caller shadow')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(caller)
+    provider = SimpleNamespace(
+        distribution="turbobench-cli",
+        import_name="turbobench",
+    )
+
+    probe = _probe_install(Path(sys.executable), provider)
+
+    assert probe["import_file"] == "__init__.py"
 
 
 def test_runtime_identity_is_content_addressed() -> None:
