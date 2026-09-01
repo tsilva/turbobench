@@ -362,18 +362,23 @@ def validate_environment(environment_type: type[Any], env: Any, provider: str) -
 
     catalog = getattr(env, "state_catalog", None)
     if isinstance(capabilities, Mapping) and capabilities.get("supports_state_catalog"):
+        try:
+            catalog_count: int | str = len(catalog)
+        except TypeError:
+            catalog_count = "unknown"
+        catalog_detail = f"type={type(catalog).__name__}, count={catalog_count}"
         _check(
             checks,
             errors,
             "immutable non-empty state catalog",
             isinstance(catalog, tuple) and bool(catalog),
-            repr(catalog),
+            catalog_detail,
         )
         try:
             unique = len(set(catalog)) == len(catalog)
         except TypeError:
             unique = False
-        _check(checks, errors, "unique state catalog", unique, repr(catalog))
+        _check(checks, errors, "unique state catalog", unique, catalog_detail)
 
     runtime = _validate_transitions(env, transport, capabilities, schema)
     checks.extend(runtime[0])

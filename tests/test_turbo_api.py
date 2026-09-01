@@ -198,6 +198,24 @@ def test_normative_constructor_and_runtime_validator_pass() -> None:
     assert len(report["report_sha256"]) == 64
 
 
+def test_runtime_report_does_not_expose_state_catalog_paths(tmp_path) -> None:
+    env = ConformingFakeV2(
+        "Fake-v0", num_envs=2, state_catalog=("default",), render_mode="rgb_array"
+    )
+    private_state = str(tmp_path / "private" / "Start.state")
+    env.state_catalog = (private_state,)
+
+    report = validate_environment(ConformingFakeV2, env, "private-catalog")
+
+    assert report["passed"]
+    assert private_state not in repr(report)
+    catalog_checks = [
+        check for check in report["checks"] if "state catalog" in check["name"]
+    ]
+    assert catalog_checks
+    assert all(check["detail"] == "type=tuple, count=1" for check in catalog_checks)
+
+
 def test_named_sequence_capability_extension_is_strictly_validated() -> None:
     env = ConformingFakeV2(
         "Fake-v0", num_envs=2, state_catalog=("default",), render_mode="rgb_array"
