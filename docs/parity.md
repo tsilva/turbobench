@@ -6,7 +6,7 @@ does not apply compatibility shims or tolerance-based comparisons.
 
 The canonical profiles are:
 
-- `supermario/canonical-v2`: original `stable-retro==1.0.1`, all four World 1
+- `supermario/world1-v2`: original `stable-retro==1.0.1`, all four World 1
   start states, shapes 1 and 4, and 4,096 seeded transitions per shape.
 - `breakout/start-v2`: original `stable-retro==1.0.1`, the `Start` state,
   shapes 1 and 4, and 4,096 seeded transitions per shape.
@@ -26,7 +26,7 @@ changes and nonignored untracked source are copied into an isolated snapshot;
 the live checkout is never installed directly.
 
 ```bash
-turbobench parity supermario/canonical-v2 \
+turbobench parity supermario/world1-v2 \
   --candidate env-supermariobrosnes-turbo-emu@checkout:/path/to/env-SuperMarioBrosNes-turbo-emu \
   --allow-dirty --quick
 ```

@@ -169,7 +169,7 @@ def test_latest_resolves_newest_eligible_tuple_and_exact_newer_is_diagnostic() -
 
 
 def test_exact_supermario_release_is_quarantine_exempt() -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     candidate = _metadata(
         {"0.6.4": [_file(NOW - timedelta(days=1), requires=">=3.9")]}
     )

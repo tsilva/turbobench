@@ -27,7 +27,7 @@ from turbobench.profiles import (
 
 def test_v1_profiles_are_immutable_and_complete() -> None:
     assert tuple(profile_id for profile_id in PROFILES if profile_id.endswith("-v1")) == (
-        "supermario/canonical-v1",
+        "supermario/world1-v1",
         "breakout/start-v1",
         "vizdoom/basic-v1",
     )
@@ -62,15 +62,15 @@ def test_current_breakout_benchmark_supports_upstream_and_turbo_references() -> 
     assert not profile.native_transition_exact
 
 
-def test_v2_profiles_have_declarative_exact_parity_commitments() -> None:
+def test_exact_parity_profiles_have_declarative_commitments() -> None:
     assert {profile_id for profile_id in PROFILES if profile_id.endswith("-v2")} == {
-        "supermario/canonical-v2",
+        "supermario/world1-v2",
         "breakout/start-v2",
         "vizdoom/basic-v2",
     }
     commitments = load_parity_profiles()
     assert set(commitments) == {
-        "supermario/canonical-v2",
+        "supermario/world1-v2",
         "breakout/start-v2",
         "vizdoom/basic-v2",
     }
@@ -82,6 +82,12 @@ def test_v2_profiles_have_declarative_exact_parity_commitments() -> None:
         assert commitment.shapes == (1, 4)
         assert commitment.steps == 4_096
         assert tomllib.loads(parity_profile_toml(commitment))["schema"] == "turbobench.parity-profile/v1"
+    assert PROFILES["supermario/world1-v2"].states == (
+        "Level1-1",
+        "Level1-2",
+        "Level1-3",
+        "Level1-4",
+    )
     breakout = PROFILES["breakout/start-v2"]
     assert (
         allowed_representation_conversion(breakout)
@@ -111,7 +117,7 @@ def test_serialized_profile_binds_the_semantic_action_table() -> None:
 
 
 def test_benchmark_actions_are_deterministic_varied_and_hashed() -> None:
-    profile = PROFILES["supermario/canonical-v1"]
+    profile = PROFILES["supermario/world1-v1"]
     first = benchmark_actions(profile, 32, 200)
     second = benchmark_actions(profile, 32, 200)
     np.testing.assert_array_equal(first, second)
@@ -130,7 +136,7 @@ def test_imported_mario_promo_reproduces_verified_action_hash() -> None:
         pressed = set(labels)
         raw.extend(int(button in pressed) if button else 0 for button in MARIO_BUTTON_ORDER)
     assert hashlib.sha256(raw).hexdigest() == MARIO_PROMO_RAW_ACTION_SHA256
-    profile = PROFILES["supermario/canonical-v1"]
+    profile = PROFILES["supermario/world1-v1"]
     assert promo_action_hash(profile, actions) == MARIO_PROMO_RAW_ACTION_SHA256
 
 

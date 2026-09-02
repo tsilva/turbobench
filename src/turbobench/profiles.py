@@ -55,8 +55,8 @@ _VIZDOOM_ACTION_TABLE = {
 
 
 PROFILES: dict[str, Profile] = {
-    "supermario/canonical-v1": Profile(
-        id="supermario/canonical-v1",
+    "supermario/world1-v1": Profile(
+        id="supermario/world1-v1",
         logical_environment="supermario",
         game="SuperMarioBros-Nes-v0",
         providers=("env-supermariobrosnes-turbo-emu", "env-stableretro-turbo", "stable-retro"),
@@ -86,8 +86,8 @@ PROFILES: dict[str, Profile] = {
         promo_steps=1_800,
         completion={"kind": "trajectory-end", "step": 1800},
     ),
-    "supermario/canonical-v2": Profile(
-        id="supermario/canonical-v2",
+    "supermario/world1-v2": Profile(
+        id="supermario/world1-v2",
         logical_environment="supermario",
         game="SuperMarioBros-Nes-v0",
         providers=("env-supermariobrosnes-turbo-emu", "env-stableretro-turbo", "stable-retro"),

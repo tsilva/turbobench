@@ -76,7 +76,7 @@ def test_resume_reuses_completed_trace_and_invocations(
     final = fake_bundle
     partial = final.with_name(final.name + ".partial")
     os.replace(final, partial)
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     left = prepare_runtime(fake_resolved("fake-slow", speed=1.0))
     right = prepare_runtime(fake_resolved("fake-fast", speed=2.0))
 
@@ -108,7 +108,7 @@ def test_portability_scan_rejects_absolute_paths(fake_bundle: Path) -> None:
 
 
 def test_quick_comparison_reports_stage_and_pair_progress(tmp_path: Path) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     left = prepare_runtime(fake_resolved("fake-slow", speed=1.0))
     right = prepare_runtime(fake_resolved("fake-fast", speed=2.0))
     messages: list[str] = []
@@ -123,7 +123,7 @@ def test_quick_comparison_reports_stage_and_pair_progress(tmp_path: Path) -> Non
         portable_assets={"required": False, "available": True, "assets": []},
     )
 
-    assert messages[0] == "Starting supermario/canonical-v1: shapes 1, 100 benchmark steps"
+    assert messages[0] == "Starting supermario/world1-v1: shapes 1, 100 benchmark steps"
     assert "Correctness for shape 1: passed" in messages
     assert "Shape 1 warmup: running left provider" in messages
     assert "Shape 1, pair 2/2 (BA): running left provider" in messages
