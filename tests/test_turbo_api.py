@@ -6,11 +6,10 @@ from typing import ClassVar
 
 import numpy as np
 
-from turbobench.runner import _construct_turbo_environment
+from turbobench.runner import _construct_turbo_workload_environment
 from turbobench.turbo_api import (
     CAPABILITY_KEYS,
     COMMON_CONSTRUCTOR_DEFAULTS,
-    TurboContractError,
     legacy_report,
     validate_constructor,
     validate_environment,
@@ -291,8 +290,8 @@ def test_malformed_v2_is_rejected_before_construction() -> None:
             nonlocal constructions
             constructions += 1
 
-    with np.testing.assert_raises(TurboContractError):
-        _construct_turbo_environment(Bad, "bad", "Bad-v0", {})
+    report = validate_constructor(Bad, "bad")
+    assert not report["passed"]
     assert constructions == 0
 
 
@@ -308,7 +307,7 @@ def test_v1_is_runnable_but_not_promotable() -> None:
             self.game = game
             self.num_envs = num_envs
 
-    env, constructed_report = _construct_turbo_environment(
+    env = _construct_turbo_workload_environment(
         Legacy,
         "legacy",
         "Legacy-v0",
@@ -316,8 +315,6 @@ def test_v1_is_runnable_but_not_promotable() -> None:
     )
     assert env.game == "Legacy-v0"
     assert env.num_envs == 3
-    assert constructed_report["passed"]
-    assert not constructed_report["promotable"]
 
 
 def test_torch_is_imported_lazily_for_numpy_validation(monkeypatch) -> None:

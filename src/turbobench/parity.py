@@ -16,7 +16,14 @@ from typing import Any
 from turbobench import DISTRIBUTION_NAME, __version__
 from turbobench.assets import discover_assets
 from turbobench.correctness import compare_reset_distributions, compare_traces
-from turbobench.engine import _provider_summary, _reset_distribution, _trace
+from turbobench.engine import (
+    _contract_attestation,
+    _execution_spec_for,
+    _provider_summary,
+    _reset_distribution,
+    _trace,
+)
+from turbobench.lifecycle import EXECUTION_PROTOCOL, AttestationError, require_attestation
 from turbobench.model import Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
@@ -38,8 +45,8 @@ from turbobench.util import (
     write_json,
 )
 
-PARITY_RESULT_SCHEMA = "turbobench.parity-result/v2"
-PARITY_MANIFEST_SCHEMA = "turbobench.parity-manifest/v2"
+PARITY_RESULT_SCHEMA = "turbobench.parity-result/v3"
+PARITY_MANIFEST_SCHEMA = "turbobench.parity-manifest/v3"
 
 
 @dataclass(frozen=True)
@@ -157,7 +164,8 @@ def run_parity_resolved(
         steps = _parity_steps(profile, options)
         seed = profile.run_seed if options.seed is None else options.seed
         lock = {
-            "schema": "turbobench.parity-lock/v1",
+            "schema": "turbobench.parity-lock/v2",
+            "execution_protocol": EXECUTION_PROTOCOL,
             "python_minor": options.python_minor,
             "harness_dependencies": list(HARNESS_REQUIREMENTS),
             "harness_source_sha256": harness_source_hash(),
@@ -185,6 +193,43 @@ def run_parity_resolved(
         action_records: dict[str, Any] = {}
         require_ram = _requires_ram(profile, authority, candidate)
         snapshot_prefix, snapshot_suffix = _snapshot_window(profile, steps)
+        contract_attestations: dict[str, dict[str, Any]] = {
+            "authority": {},
+            "candidate": {},
+        }
+        for side, provider in (("authority", authority), ("candidate", candidate)):
+            for shape in shapes:
+                contract_attestations[side][str(shape)] = _contract_attestation(
+                    partial,
+                    provider,
+                    profile,
+                    shape,
+                    assets,
+                    asset_record,
+                    side=side,
+                )
+            if "reset-distribution" in profile.checks:
+                contract_attestations[side]["reset-distribution"] = _contract_attestation(
+                    partial,
+                    provider,
+                    profile,
+                    1,
+                    assets,
+                    asset_record,
+                    side=f"reset-distribution-{side}",
+                    noop_reset_max=30,
+                )
+        failed_attestations = [
+            f"{side}/{configuration}"
+            for side, records in contract_attestations.items()
+            for configuration, record in records.items()
+            if not record.get("passed")
+        ]
+        if failed_attestations:
+            raise RuntimeError(
+                "contract validation failed before parity workloads: "
+                + ", ".join(failed_attestations)
+            )
         for shape in shapes:
             options.report_progress(
                 f"Exact parity trace for shape {shape}: {steps} seeded transitions"
@@ -209,6 +254,10 @@ def run_parity_resolved(
                 trace_ram=require_ram,
                 snapshot_prefix_steps=snapshot_prefix,
                 snapshot_suffix_steps=snapshot_suffix,
+                execution_spec_record=_execution_spec_for(
+                    authority, profile, shape, asset_record
+                ),
+                contract_attestation=contract_attestations["authority"][str(shape)],
             )
             right_trace = _trace(
                 partial,
@@ -222,6 +271,10 @@ def run_parity_resolved(
                 trace_ram=require_ram,
                 snapshot_prefix_steps=snapshot_prefix,
                 snapshot_suffix_steps=snapshot_suffix,
+                execution_spec_record=_execution_spec_for(
+                    candidate, profile, shape, asset_record
+                ),
+                contract_attestation=contract_attestations["candidate"][str(shape)],
             )
             checks[str(shape)] = compare_traces(
                 left_trace, right_trace, profile, require_snapshot=True
@@ -243,6 +296,12 @@ def run_parity_resolved(
                 assets,
                 side="authority",
                 seed_count=seed_count,
+                execution_spec_record=_execution_spec_for(
+                    authority, profile, 1, asset_record, noop_reset_max=30
+                ),
+                contract_attestation=contract_attestations["authority"][
+                    "reset-distribution"
+                ],
             )
             candidate_resets = _reset_distribution(
                 partial,
@@ -251,12 +310,29 @@ def run_parity_resolved(
                 assets,
                 side="candidate",
                 seed_count=seed_count,
+                execution_spec_record=_execution_spec_for(
+                    candidate, profile, 1, asset_record, noop_reset_max=30
+                ),
+                contract_attestation=contract_attestations["candidate"][
+                    "reset-distribution"
+                ],
             )
             distribution_check = compare_reset_distributions(
                 authority_resets, candidate_resets
             )
 
-        passed = (
+        phase_isolated = all(
+            attestation.get("protocol") == EXECUTION_PROTOCOL
+            and attestation.get("passed")
+            for records in contract_attestations.values()
+            for attestation in records.values()
+        )
+        contracts_promotable = all(
+            attestation.get("promotable")
+            for records in contract_attestations.values()
+            for attestation in records.values()
+        )
+        passed = phase_isolated and (
             all(check["passed"] for check in checks.values())
             and (distribution_check is None or distribution_check["passed"])
         )
@@ -268,6 +344,7 @@ def run_parity_resolved(
         )
         official = (
             passed
+            and contracts_promotable
             and canonical_workload
             and authority.source_kind == "pypi"
             and authority.source_identity
@@ -291,6 +368,8 @@ def run_parity_resolved(
             "compatibility_normalization_permitted": False,
             "ram_required": require_ram,
             "snapshot_continuation_required": True,
+            "phase_isolated_execution_required": True,
+            "contracts_promotable": contracts_promotable,
             "providers": {
                 "authority": _provider_summary(authority),
                 "candidate": _provider_summary(candidate),
@@ -299,6 +378,8 @@ def run_parity_resolved(
             "reset_distribution": distribution_check,
             "actions": action_records,
             "assets": asset_record,
+            "execution_protocol": EXECUTION_PROTOCOL,
+            "contract_attestations": contract_attestations,
             "lock_sha256": canonical_json_hash(lock),
             "tool": {
                 "distribution": DISTRIBUTION_NAME,
@@ -332,11 +413,12 @@ def verify_parity_receipt(
 ) -> dict[str, Any]:
     root = receipt.expanduser().resolve()
     errors: list[str] = []
+    warnings: list[str] = []
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
         return {"passed": False, "errors": ["manifest.json is missing"]}
     manifest = read_json(manifest_path)
-    if manifest.get("schema") != PARITY_MANIFEST_SCHEMA:
+    if manifest.get("schema") not in {PARITY_MANIFEST_SCHEMA, "turbobench.parity-manifest/v2"}:
         errors.append("unsupported parity manifest schema")
     expected_id = canonical_json_hash({**manifest, "receipt_id": ""})
     if manifest.get("receipt_id") != expected_id:
@@ -363,8 +445,13 @@ def verify_parity_receipt(
         result = read_json(root / "result.json")
         lock = read_json(root / "resolved-lock.json")
         profile = get_profile(result["profile"]["id"])
-        if result.get("schema") != PARITY_RESULT_SCHEMA:
+        result_schema = result.get("schema")
+        if result_schema not in {PARITY_RESULT_SCHEMA, "turbobench.parity-result/v2"}:
             errors.append("unsupported parity result schema")
+        if result_schema == "turbobench.parity-result/v2":
+            warnings.append(
+                "legacy parity integrity is verifiable, but its execution was not phase-isolated"
+            )
         if result["profile"].get("sha256") != profile_hash(profile):
             errors.append("receipt profile hash is inconsistent")
         if (root / "profile.toml").read_text(encoding="utf-8") != profile_toml(profile):
@@ -373,6 +460,8 @@ def verify_parity_receipt(
             errors.append("resolved lock hash is inconsistent")
         if lock.get("profile") != result.get("profile"):
             errors.append("resolved lock profile differs from result.json")
+        if result_schema == PARITY_RESULT_SCHEMA:
+            _verify_parity_attestations(root, result, lock, errors)
         checks_passed = bool(result.get("checks")) and all(
             check.get("passed") for check in result.get("checks", {}).values()
         )
@@ -509,7 +598,88 @@ def verify_parity_receipt(
         "receipt_id": manifest.get("receipt_id"),
         "artifact_count": len(manifest.get("artifacts", [])),
         "errors": errors,
+        "warnings": warnings,
     }
+
+
+def _verify_parity_attestations(
+    root: Path, result: dict[str, Any], lock: dict[str, Any], errors: list[str]
+) -> None:
+    attestations = result.get("contract_attestations")
+    if (
+        result.get("execution_protocol") != EXECUTION_PROTOCOL
+        or lock.get("execution_protocol") != EXECUTION_PROTOCOL
+        or result.get("phase_isolated_execution_required") is not True
+    ):
+        errors.append("parity receipt lacks the phase-isolated execution protocol")
+    if result.get("claim", {}).get("status") == "official" and not result.get(
+        "contracts_promotable"
+    ):
+        errors.append("official parity receipt has non-promotable contracts")
+    if not isinstance(attestations, dict):
+        errors.append("parity contract attestations are missing")
+        return
+    responses: dict[str, dict[str, Any]] = {}
+    for path in (root / "verification" / "attestations").glob("*.json"):
+        response = read_json(path)
+        digest = response.get("contract_attestation", {}).get("attestation_sha256")
+        if isinstance(digest, str):
+            responses[digest] = response
+    expected: dict[tuple[str, str], str] = {}
+    for side, records in attestations.items():
+        for configuration, attestation in records.items():
+            digest = attestation.get("attestation_sha256")
+            response = responses.get(digest)
+            if response is None:
+                errors.append(f"{side}/{configuration} contract attestation is missing")
+                continue
+            try:
+                spec = response.get("execution_spec", {})
+                require_attestation(spec, attestation)
+            except AttestationError as exc:
+                errors.append(f"{side}/{configuration} contract attestation is invalid: {exc}")
+                spec = {}
+            report = attestation.get("contract_report", {})
+            expected_report_hash = canonical_json_hash(
+                {key: value for key, value in report.items() if key != "report_sha256"}
+            )
+            expected_shape = 1 if configuration == "reset-distribution" else int(configuration)
+            if (
+                report.get("schema") != "turbobench.turbo-contract-report/v1"
+                or report.get("report_sha256") != expected_report_hash
+                or bool(attestation.get("passed")) != bool(report.get("passed"))
+                or spec.get("provider") != lock.get("providers", {}).get(side)
+                or spec.get("profile") != lock.get("profile")
+                or spec.get("assets") != lock.get("assets")
+                or spec.get("constructor", {}).get("shape") != expected_shape
+            ):
+                errors.append(f"{side}/{configuration} contract binding is inconsistent")
+            if not response.get("lifecycle", {}).get("environment_closed"):
+                errors.append(f"{side}/{configuration} contract environment was not closed")
+            expected[(side, str(configuration))] = str(digest)
+    for shape in result.get("checks", {}):
+        for side in ("authority", "candidate"):
+            path = root / "raw" / f"shape-{shape}" / f"trace-{side}.json"
+            lifecycle = read_json(path).get("lifecycle", {}) if path.is_file() else {}
+            if (
+                lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+                or lifecycle.get("contract_attestation_sha256") != expected.get((side, shape))
+                or lifecycle.get("dynamic_contract_validation_calls") != 0
+                or lifecycle.get("environment_closed") is not True
+            ):
+                errors.append(f"{side} shape {shape} trace attestation is inconsistent")
+    if result.get("reset_distribution") is not None:
+        for side in ("authority", "candidate"):
+            path = root / "raw" / "reset-distribution" / f"{side}.json"
+            lifecycle = read_json(path).get("lifecycle", {}) if path.is_file() else {}
+            if (
+                lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+                or lifecycle.get("contract_attestation_sha256")
+                != expected.get((side, "reset-distribution"))
+                or lifecycle.get("dynamic_contract_validation_calls") != 0
+                or lifecycle.get("environment_closed") is not True
+            ):
+                errors.append(f"{side} reset-distribution attestation is inconsistent")
 
 
 def parity_gate_for_benchmark(
@@ -534,6 +704,11 @@ def parity_gate_for_benchmark(
         root = receipt.expanduser().resolve()
         result = read_json(root / "result.json")
         lock = read_json(root / "resolved-lock.json")
+        if result.get("execution_protocol") != EXECUTION_PROTOCOL:
+            errors.append(
+                f"{receipt}: parity evidence predates phase-isolated execution and cannot be reused"
+            )
+            continue
         if result.get("profile") != {
             "id": benchmark_profile.id,
             "sha256": profile_hash(benchmark_profile),

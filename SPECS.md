@@ -23,6 +23,7 @@ turbobench gives reinforcement-learning environment authors and users a provider
 ### Comparisons
 
 - Use one workload definition across parity, light comparison, and full comparison while keeping parity as a separate command; make full comparison include light-comparison guarantees, and reuse compatible evidence without requiring comparisons to run canonical parity.
+- Contract validation, correctness, timing, and replay must use phase-isolated provider processes and fresh environment instances; no operation excluded from timing may mutate an instance used for timed measurement.
 - Compare providers only when they are explicitly compatible with the same logical environment and workload; never rank or compare different games or unmatched workloads.
 - The first complete release must support `env-supermariobrosnes-turbo-emu`, `env-breakoutatari2600-turbo-native`, `env-stableretro-turbo`, and `env-vizdoom-turbo` against their compatible upstream or Turbo providers.
 - Support latest eligible package releases, exact package versions, exact local distribution artifacts, and clean local checkouts while resolving every run to isolated, exact, hash-recorded runtime artifacts.

@@ -119,10 +119,19 @@ final machine-readable JSON.
 - Comparisons validate only their selected pair and never prepare an original authority
   unless that authority is itself selected. Compatible parity receipts may replace matching
   correctness shapes; missing shapes are checked directly during the comparison.
-- Turbo providers are preflighted against the normative
-  [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Contract reports
-  are hash-bound into result bundles; malformed v2 providers stop before any
-  workload, while historical v1 providers remain diagnostic-only.
+- Every distinct provider configuration and vector shape is preflighted in a consuming,
+  phase-isolated subprocess against the normative
+  [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Successful attestations are
+  bound to exact portable execution-spec fingerprints; trace, warmup, timing, reset, and
+  replay each use fresh processes and environments that never run dynamic contract validation.
+  Malformed v2 providers stop before dependent workloads, while historical v1 providers remain
+  diagnostic-only.
+- Published TurboBench releases 1.0.3 through 2.0.6 ran mutable Turbo API validation inside
+  workload processes.
+  Bundles from those versions may remain structurally intact, but their performance evidence is
+  potentially contaminated when a contract operation enables persistent provider state. Rerun
+  those comparisons with the phase-isolated protocol before using them to support performance
+  claims.
 - Result bundles contain the exact provider lock, shape-local statistics, report, chart, raw
   evidence, verification records, and optional media. `manifest.json` binds every portable
   file by size and SHA-256; turbobench does not upload or publish bundles.
