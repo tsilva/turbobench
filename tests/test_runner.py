@@ -16,16 +16,13 @@ from turbobench.profiles import (
 )
 from turbobench.runner import (
     Adapter,
-    BreakoutPaddleNormalizer,
     FakeAdapter,
-    ScalarPreprocessingEnv,
     ScalarWorkerConfig,
     _button_masks,
     _canonical_raw_rgb,
     _canonical_stella_rgb,
     _comparison_raw_rgb,
     _create_retro_overlay,
-    _needs_legacy_breakout_paddle_normalization,
     _normalize_scalar_rgb,
     _semantic_raw_rgb,
     _snapshot_episode_window,
@@ -49,7 +46,7 @@ def test_snapshot_continuation_stops_after_the_first_lifecycle_boundary() -> Non
 
 
 def test_turbo_provider_options_spell_out_every_benchmark_semantic() -> None:
-    profile = get_profile("breakout/start-v2")
+    profile = get_profile("breakout/start-v1")
     options = _turbo_v2_options(profile, 16, profile.frame_skip)
     assert tuple(options) == (
         "state",
@@ -113,7 +110,7 @@ def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> Non
 
 
 def test_exact_mario_raw_frames_decode_to_lossless_native_rgb565_codes() -> None:
-    profile = get_profile("supermario/world1-v2")
+    profile = get_profile("supermario/world1-v1")
     native = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
     np.testing.assert_array_equal(
@@ -141,7 +138,7 @@ def test_upstream_atari_scalar_policy_pixels_preserve_bgr_transport() -> None:
 
 
 def test_stable_retro_turbo_breakout_render_is_normalized_for_comparison() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     bgr = np.asarray([[[72, 72, 205], [139, 141, 139]]], dtype=np.uint8)
     np.testing.assert_array_equal(
         _comparison_raw_rgb(bgr, profile, "env-stableretro-turbo"),
@@ -150,7 +147,7 @@ def test_stable_retro_turbo_breakout_render_is_normalized_for_comparison() -> No
 
 
 def test_original_stable_retro_breakout_render_is_normalized_for_comparison() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     bgr = np.asarray([[[72, 72, 205], [139, 141, 139]]], dtype=np.uint8)
     np.testing.assert_array_equal(
         _comparison_raw_rgb(bgr, profile, "stable-retro"),
@@ -159,7 +156,7 @@ def test_original_stable_retro_breakout_render_is_normalized_for_comparison() ->
 
 
 def test_current_breakout_metadata_records_only_transport_normalization() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     env = SimpleNamespace(num_envs=1, buttons=("BUTTON",), metadata={}, capabilities={})
     for provider in ("stable-retro", "env-stableretro-turbo"):
         metadata = Adapter(env, profile, provider, native_discrete=True).metadata()
@@ -240,110 +237,6 @@ def test_scalar_breakout_overlay_uses_runtime_compatible_packaged_state(tmp_path
         assert not (game / "Start.state").exists()
     finally:
         overlay.cleanup()
-
-
-def test_upstream_breakout_paddle_shim_matches_corrected_stella_repeat_sequence() -> None:
-    normalizer = BreakoutPaddleNormalizer()
-
-    def action(label: str) -> np.ndarray:
-        value = np.zeros(8, dtype=np.int8)
-        if label == "left":
-            value[6] = 1
-        elif label == "right":
-            value[7] = 1
-        return value
-
-    positions = []
-    for label in ("noop", "noop", "right", "left", "left"):
-        for _ in range(4):
-            normalizer.step(action(label))
-        positions.append(normalizer.x)
-    assert positions == [31, 26, 26, 25, 17]
-
-    frame = np.zeros((210, 160, 3), dtype=np.uint8)
-    frame[189:193, 8:24] = [200, 72, 72]
-    corrected = normalizer.normalize_frame(frame)
-    assert not corrected[189:193, 8:17].any()
-    assert np.all(corrected[189:193, 17:33] == [200, 72, 72])
-
-
-def test_upstream_breakout_paddle_shim_is_scoped_to_historical_v1() -> None:
-    base = {
-        "provider": "stable-retro",
-        "game": "Breakout-Atari2600-v0",
-        "state": "Start",
-        "integration_path": None,
-        "frame_skip": 4,
-        "frame_stack": 4,
-        "crop_top": 0,
-        "crop_bottom": 0,
-        "crop_mode": "remove",
-        "grayscale": True,
-        "resize": (84, 84),
-    }
-    assert _needs_legacy_breakout_paddle_normalization(
-        ScalarWorkerConfig(**base, profile_id="breakout/start-v1")
-    )
-    assert not _needs_legacy_breakout_paddle_normalization(
-        ScalarWorkerConfig(**base, profile_id="breakout/start-v3")
-    )
-
-
-def test_upstream_breakout_reset_advances_blank_tia_frame(monkeypatch) -> None:
-    class Box:
-        def __init__(self, **kwargs) -> None:
-            self.__dict__.update(kwargs)
-
-    monkeypatch.setitem(
-        __import__("sys").modules, "gymnasium", SimpleNamespace(spaces=SimpleNamespace(Box=Box))
-    )
-
-    class TransientBlankEnv:
-        buttons = ("BUTTON",)
-        action_space = SimpleNamespace(shape=(1,))
-
-        def __init__(self) -> None:
-            self.calls = 0
-            self.steps = 0
-            self.unwrapped = self
-            self.metadata = {}
-
-        def reset(self, *, seed=None, options=None):
-            self.calls += 1
-            frame = np.zeros((210, 160, 3), dtype=np.uint8)
-            return frame, {}
-
-        def step(self, action):
-            self.steps += 1
-            frame = np.zeros((210, 160, 3), dtype=np.uint8)
-            # Upstream Atari video is exposed in BGR order.
-            frame[189:193, 8:24] = [72, 72, 200]
-            return frame, 0.0, False, False, {}
-
-        def close(self) -> None:
-            pass
-
-    config = ScalarWorkerConfig(
-        provider="stable-retro",
-        game="Breakout-Atari2600-v0",
-        state="Start",
-        integration_path=None,
-        frame_skip=4,
-        frame_stack=4,
-        crop_top=0,
-        crop_bottom=0,
-        crop_mode="remove",
-        grayscale=True,
-        resize=(84, 84),
-        profile_id="breakout/start-v1",
-    )
-    env = TransientBlankEnv()
-    wrapped = ScalarPreprocessingEnv(env, config)
-    observation, _info = wrapped.reset(seed=123)
-    assert env.calls == 1
-    assert env.steps == 1
-    assert observation.shape == (4, 84, 84)
-    assert np.all(wrapped.render()[189:193, 115:131] == [72, 72, 200])
 
 
 def test_integer_area_preprocessing_matches_manual_bins_and_masks_hud() -> None:
@@ -497,7 +390,7 @@ def test_direct_trace_correctness_detects_every_contract_class() -> None:
 
 
 def test_exact_profile_rejects_reward_delta_inside_v1_tolerance() -> None:
-    profile = get_profile("breakout/start-v2")
+    profile = get_profile("breakout/start-v1")
     left = execute(_trace_request(profile.id, shape=1))
     right = deepcopy(left)
     right["steps"][0]["rewards"][0] += 5e-7

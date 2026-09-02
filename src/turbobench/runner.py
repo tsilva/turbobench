@@ -9,7 +9,6 @@ and selective resets.
 from __future__ import annotations
 
 import argparse
-import bisect
 import hashlib
 import importlib
 import importlib.metadata
@@ -65,194 +64,6 @@ class ScalarWorkerConfig:
     noop_reset_max: int = 0
 
 
-_PADDLE_MEASURE_LOWER_BOUNDS = (
-    1,
-    272,
-    295,
-    318,
-    341,
-    366,
-    388,
-    411,
-    447,
-    470,
-    493,
-    516,
-    539,
-    563,
-    586,
-    609,
-    633,
-    657,
-    680,
-    703,
-    733,
-    757,
-    780,
-    803,
-    828,
-    851,
-    874,
-    897,
-    920,
-    943,
-    966,
-    991,
-    1013,
-    1036,
-    1060,
-    1083,
-    1107,
-    1130,
-    1157,
-    1180,
-    1203,
-    1228,
-    1251,
-    1274,
-    1297,
-    1320,
-    1343,
-    1366,
-    1391,
-    1413,
-    1436,
-    1460,
-    1483,
-    1507,
-    1530,
-    1553,
-    1576,
-    1599,
-    1624,
-    1647,
-    1670,
-    1693,
-    1716,
-    1739,
-    1762,
-    1786,
-    1809,
-    1832,
-    1857,
-    1880,
-    1903,
-    1926,
-    1949,
-    1972,
-    1995,
-    2020,
-    2039,
-    2066,
-    2088,
-    2112,
-    2135,
-    2158,
-    2182,
-    2205,
-    2228,
-    2253,
-    2276,
-    2299,
-    2322,
-)
-
-
-def _needs_legacy_breakout_paddle_normalization(config: ScalarWorkerConfig) -> bool:
-    """Retain the historical v1 workload without changing current comparisons."""
-
-    return (
-        config.provider == "stable-retro"
-        and config.game.startswith("Breakout-Atari2600")
-        and config.profile_id == "breakout/start-v1"
-        and not config.native_transition_exact
-    )
-
-
-class BreakoutPaddleNormalizer:
-    """Canonical corrected-Stella paddle state for upstream 1.0.1 frames."""
-
-    def __init__(self) -> None:
-        self.reset()
-
-    def reset(self) -> None:
-        self.x = 115
-        self.charge = 2048
-        self.repeat = 0
-        self.held = False
-        self.measurement = 162
-
-    def step(self, action: Any) -> None:
-        buttons = np.asarray(action)
-        direction = 2 if bool(buttons[7]) else 3 if bool(buttons[6]) else 0
-        raw_x = self.x + 47
-        target = 235 - self.measurement
-        self.x = min(191, max(55, (raw_x + target) // 2)) - 47
-        if self.held:
-            self.repeat += 1
-            if self.repeat > 5:
-                self.repeat = 25
-        if direction == 2 and self.charge > self.repeat:
-            self.charge -= self.repeat
-        elif direction == 3 and self.charge + self.repeat < 3856:
-            self.charge += self.repeat
-        self.held = direction in {2, 3}
-        index = max(0, bisect.bisect_right(_PADDLE_MEASURE_LOWER_BOUNDS, self.charge) - 1)
-        self.measurement = 0 if index == 0 else 12 + 2 * (index - 1)
-
-    def normalize_frame(self, frame: np.ndarray) -> np.ndarray:
-        if frame.shape[:2] != (210, 160):
-            raise ValueError(f"canonical Breakout frame must be 210x160, got {frame.shape}")
-        candidates: list[tuple[int, int]] = []
-        red = np.asarray([200, 72, 72], dtype=np.uint8)
-        runs: list[tuple[int, int]] = []
-        for candidate_red in (
-            red,
-            np.asarray([72, 72, 200], dtype=np.uint8),
-            np.asarray([72, 72, 205], dtype=np.uint8),
-        ):
-            mask = np.all(frame[190] == candidate_red, axis=1)
-            runs = []
-            start: int | None = None
-            for offset, enabled in enumerate((*mask.tolist(), False)):
-                if enabled and start is None:
-                    start = offset
-                elif not enabled and start is not None:
-                    runs.append((start, offset - start))
-                    start = None
-            candidates = [run for run in runs if run[1] in {12, 16}]
-            if candidates:
-                red = candidate_red
-                break
-        if not candidates:
-            colors, counts = np.unique(frame[190], axis=0, return_counts=True)
-            dominant = sorted(
-                (
-                    (int(count), tuple(int(channel) for channel in color))
-                    for color, count in zip(colors, counts, strict=True)
-                ),
-                reverse=True,
-            )[:8]
-            red_rows = [
-                (row, int(count))
-                for row, count in enumerate(np.all(frame == red, axis=2).sum(axis=1))
-                if count
-            ]
-            raise RuntimeError(
-                "could not locate canonical Breakout paddle raster; "
-                f"red_runs={runs!r}; dominant_row_colors={dominant!r}; "
-                f"red_rows={red_rows!r}"
-            )
-        old_x, width = max(candidates, key=lambda run: run[1])
-        new_x = min(144, max(8, self.x))
-        if old_x == new_x:
-            return frame
-        value = frame.copy()
-        value[189:193, old_x : old_x + width] = 0
-        value[189:193, new_x : new_x + width] = red
-        return value
-
-
 class ScalarPreprocessingEnv:
     """Gymnasium-compatible preprocessing kept inside each scalar worker."""
 
@@ -281,11 +92,6 @@ class ScalarPreprocessingEnv:
         self.action_space = env.action_space
         self.metadata = dict(getattr(env, "metadata", {}))
         self.render_mode = "rgb_array"
-        self._paddle_normalizer = (
-            BreakoutPaddleNormalizer()
-            if _needs_legacy_breakout_paddle_normalization(config)
-            else None
-        )
 
     @property
     def unwrapped(self) -> Any:
@@ -300,31 +106,9 @@ class ScalarPreprocessingEnv:
         if not self._restoring_snapshot:
             self._parity_action_history.clear()
             self._parity_reset_seed = seed
-        if self._paddle_normalizer is not None:
-            self._paddle_normalizer.reset()
         observation, info = self.env.reset(seed=seed, options=options)
         raw = _screen(observation)
         self._raw_frame = _normalize_scalar_rgb(raw, self.config)
-        if self._paddle_normalizer is not None:
-            try:
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
-            except RuntimeError:
-                if np.any(self._raw_frame):
-                    raise
-                # Upstream Stable Retro's Atari reset returns the blank TIA
-                # frame immediately before the canonical post-restore frame.
-                # Advance that neutral frame inside reset; selective resets
-                # remain timed by the benchmark contract.
-                neutral = np.zeros(self.action_space.shape, dtype=np.int8)
-                observation, _reward, terminated, truncated, step_info = self.env.step(neutral)
-                if terminated or truncated:
-                    raise RuntimeError(
-                        "upstream Breakout terminated during reset bootstrap"
-                    ) from None
-                if step_info:
-                    info = step_info
-                self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         noop_count = 0
         if self.config.noop_reset_max:
             if seed is None:
@@ -342,8 +126,6 @@ class ScalarPreprocessingEnv:
                 if step_info:
                     info = step_info
             self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-            if self._paddle_normalizer is not None:
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         if not info:
             data = getattr(self.env.unwrapped, "data", None)
             if data is not None and hasattr(data, "lookup_all"):
@@ -367,8 +149,6 @@ class ScalarPreprocessingEnv:
         info: dict[str, Any] = {}
         observation: Any = None
         for _ in range(self.config.frame_skip):
-            if self._paddle_normalizer is not None:
-                self._paddle_normalizer.step(action)
             observation, reward, terminated, truncated, info = self.env.step(action)
             total_reward += float(reward)
             if terminated or truncated:
@@ -388,8 +168,6 @@ class ScalarPreprocessingEnv:
             self._stack[-self._channels :] = last_frame
             return self._stack.copy(), total_reward, terminated, truncated, info
         self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-        if self._paddle_normalizer is not None:
-            self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         frame = preprocess_frame(self._raw_frame, self.config)
         if self._stack.shape[0] > self._channels:
             self._stack[: -self._channels] = self._stack[self._channels :]
@@ -792,10 +570,7 @@ class Adapter:
                 else "identity"
             ),
             "compatibility_normalization": (
-                "upstream-stella-reset-and-paddle-v1"
-                if self.provider == "stable-retro"
-                and self.profile.id == "breakout/start-v1"
-                else "vizdoom-last-valid-terminal-frame-v1"
+                "vizdoom-last-valid-terminal-frame-v1"
                 if self.profile.logical_environment == "vizdoom-basic"
                 else "identity"
             ),

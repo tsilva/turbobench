@@ -20,18 +20,6 @@ STATE_SHA256: dict[str, dict[str, str]] = {
         "Level1-4": "d763572ad5ea3382b7ad901b3f4bfe991fc641cf5251f8223c32f532896ed8b6",
     },
     "breakout/start-v1": {
-        "Start": "84622481671574e45f3da84678ab8ba79756cbcc656158015e0d69dad9fad590",
-    },
-    "supermario/world1-v2": {
-        "Level1-1": "905a2e5d8a1bcc8b5955d132a77a8244025d205c2c6a9b07404758d3b84174b5",
-        "Level1-2": "68d94ad097de8920a4ec5035be30cb6ec38b0bcdf48fcf65360c07b8e337900a",
-        "Level1-3": "f83f72d6e46d8ebe580bde2ce473faa1aa736640c9e99b4358867ace6c5d64bb",
-        "Level1-4": "d763572ad5ea3382b7ad901b3f4bfe991fc641cf5251f8223c32f532896ed8b6",
-    },
-    "breakout/start-v2": {
-        "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
-    },
-    "breakout/start-v3": {
         "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
     },
 }

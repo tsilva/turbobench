@@ -25,13 +25,15 @@ from turbobench.profiles import (
 )
 
 
-def test_v1_profiles_are_immutable_and_complete() -> None:
-    assert tuple(profile_id for profile_id in PROFILES if profile_id.endswith("-v1")) == (
+def test_workload_profiles_are_unified_and_complete() -> None:
+    assert set(PROFILES) == {
         "supermario/world1-v1",
         "breakout/start-v1",
         "vizdoom/basic-v1",
-    )
-    for profile in (profile for profile in PROFILES.values() if profile.id.endswith("-v1")):
+    }
+    commitments = load_parity_profiles()
+    assert set(commitments) == set(PROFILES)
+    for profile in PROFILES.values():
         assert profile.shapes == (1, 16, 32)
         assert profile.frame_skip == 4
         assert profile.frame_stack == 4
@@ -43,14 +45,19 @@ def test_v1_profiles_are_immutable_and_complete() -> None:
         assert profile.benchmark_steps == 250
         assert len(profile_hash(profile)) == 64
         serialized = profile_toml(profile)
-        assert tomllib.loads(serialized)["id"] == profile.id
+        parsed = tomllib.loads(serialized)
+        assert parsed["schema"] == "turbobench.workload-profile/v1"
+        assert parsed["id"] == profile.id
         assert "[action_table]" in serialized
-        assert profile_payload(profile)["benchmark"]["semantic_actions"]
-        assert profile_payload(profile)["benchmark"]["action_table"]
+        assert "[benchmark]" in serialized
+        assert "[parity]" in serialized
+        assert profile_payload(profile)["semantic_actions"]
+        assert profile_payload(profile)["action_table"]
+        assert parity_profile_toml(commitments[profile.id]) == serialized
 
 
 def test_current_breakout_benchmark_supports_upstream_and_turbo_references() -> None:
-    profile = PROFILES["breakout/start-v3"]
+    profile = PROFILES["breakout/start-v1"]
     assert profile.providers == (
         "env-breakoutatari2600-turbo-native",
         "env-stableretro-turbo",
@@ -58,37 +65,35 @@ def test_current_breakout_benchmark_supports_upstream_and_turbo_references() -> 
     )
     assert profile.shapes == (1, 16, 32)
     assert profile.states == ("Start",)
-    assert profile.info_integer == ("score", "lives")
-    assert not profile.native_transition_exact
+    assert profile.info_integer == ("score", "lives", "ball_y")
+    assert profile.native_transition_exact
 
 
-def test_exact_parity_profiles_have_declarative_commitments() -> None:
-    assert {profile_id for profile_id in PROFILES if profile_id.endswith("-v2")} == {
-        "supermario/world1-v2",
-        "breakout/start-v2",
-        "vizdoom/basic-v2",
-    }
+def test_parity_sections_have_declarative_commitments() -> None:
     commitments = load_parity_profiles()
     assert set(commitments) == {
-        "supermario/world1-v2",
-        "breakout/start-v2",
-        "vizdoom/basic-v2",
+        "supermario/world1-v1",
+        "breakout/start-v1",
+        "vizdoom/basic-v1",
     }
     for profile_id in commitments:
         profile = PROFILES[profile_id]
         assert profile.native_transition_exact
-        assert profile.shapes == (1, 4)
+        assert profile.shapes == (1, 16, 32)
         commitment = commitments[profile_id]
         assert commitment.shapes == (1, 4)
         assert commitment.steps == 4_096
-        assert tomllib.loads(parity_profile_toml(commitment))["schema"] == "turbobench.parity-profile/v1"
-    assert PROFILES["supermario/world1-v2"].states == (
+        assert (
+            tomllib.loads(parity_profile_toml(commitment))["schema"]
+            == "turbobench.workload-profile/v1"
+        )
+    assert PROFILES["supermario/world1-v1"].states == (
         "Level1-1",
         "Level1-2",
         "Level1-3",
         "Level1-4",
     )
-    breakout = PROFILES["breakout/start-v2"]
+    breakout = PROFILES["breakout/start-v1"]
     assert (
         allowed_representation_conversion(breakout)
         == BREAKOUT_RGB_TRANSPORT_CONVERSION
@@ -100,7 +105,7 @@ def test_exact_parity_profiles_have_declarative_commitments() -> None:
 
 
 def test_parity_actions_are_seeded_random_with_directed_prefix() -> None:
-    profile = PROFILES["breakout/start-v2"]
+    profile = PROFILES["breakout/start-v1"]
     first = parity_actions(profile, 4, 64, seed=123)
     second = parity_actions(profile, 4, 64, seed=123)
     np.testing.assert_array_equal(first, second)
@@ -113,7 +118,7 @@ def test_serialized_profile_binds_the_semantic_action_table() -> None:
     profile = PROFILES["vizdoom/basic-v1"]
     serialized = profile_toml(profile)
     assert 'attack = ["ATTACK"]' in serialized
-    assert profile_payload(profile)["benchmark"]["action_table"]["right"] == ["MOVE_RIGHT"]
+    assert profile_payload(profile)["action_table"]["right"] == ["MOVE_RIGHT"]
 
 
 def test_benchmark_actions_are_deterministic_varied_and_hashed() -> None:

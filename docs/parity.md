@@ -1,16 +1,17 @@
 # Cross-provider parity
 
-TurboBench parity profiles compare environment behavior against a pinned original
-authority. This is a fidelity test, not a speed benchmark, and it
-does not apply compatibility shims or tolerance-based comparisons.
+Each TurboBench workload profile includes performance settings and a parity
+contract. The parity contract compares environment behavior against a pinned
+original authority. This is a fidelity test, not a speed benchmark, and it does
+not apply compatibility shims or tolerance-based comparisons.
 
 The canonical profiles are:
 
-- `supermario/world1-v2`: original `stable-retro==1.0.1`, all four World 1
+- `supermario/world1-v1`: original `stable-retro==1.0.1`, all four World 1
   start states, shapes 1 and 4, and 4,096 seeded transitions per shape.
-- `breakout/start-v2`: original `stable-retro==1.0.1`, the `Start` state,
+- `breakout/start-v1`: original `stable-retro==1.0.1`, the `Start` state,
   shapes 1 and 4, and 4,096 seeded transitions per shape.
-- `vizdoom/basic-v2`: original `vizdoom==1.3.0`, shapes 1 and 4, and 4,096
+- `vizdoom/basic-v1`: original `vizdoom==1.3.0`, shapes 1 and 4, and 4,096
   seeded transitions per shape.
 
 Each transition compares processed observations, lossless native-frame pixel
@@ -26,7 +27,7 @@ changes and nonignored untracked source are copied into an isolated snapshot;
 the live checkout is never installed directly.
 
 ```bash
-turbobench parity supermario/world1-v2 \
+turbobench parity supermario/world1-v1 \
   --candidate env-supermariobrosnes-turbo-emu@checkout:/path/to/env-SuperMarioBrosNes-turbo-emu \
   --allow-dirty --quick
 ```
@@ -37,7 +38,7 @@ workload evidence. For a release, build the exact final wheel first. The
 canonical gate requires the full workload, pinned authority, and that wheel:
 
 ```bash
-turbobench parity breakout/start-v2 \
+turbobench parity breakout/start-v1 \
   --candidate env-breakoutatari2600-turbo-native@artifact:/absolute/path/to/candidate.whl \
   --output /external/evidence/receipt
 turbobench verify-parity /external/evidence/receipt

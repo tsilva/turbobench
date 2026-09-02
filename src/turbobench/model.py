@@ -107,6 +107,7 @@ class Profile:
     completion: dict[str, Any] = field(default_factory=dict)
     asset_sha256: str | None = None
     native_transition_exact: bool = False
+    allowed_representation_conversion: str = "identity"
 
     def compatible(self, left: str, right: str) -> bool:
         return left != right and left in self.providers and right in self.providers

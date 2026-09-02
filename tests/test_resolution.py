@@ -201,7 +201,7 @@ def test_exact_supermario_release_is_quarantine_exempt() -> None:
 
 
 def test_exact_breakout_release_is_quarantine_exempt() -> None:
-    profile = get_profile("breakout/start-v2")
+    profile = get_profile("breakout/start-v1")
     candidate = _metadata({"0.5.6": [_file(NOW - timedelta(days=1))]})
     baseline = _metadata({"1.0.1": [_file(NOW - timedelta(days=30))]})
 
