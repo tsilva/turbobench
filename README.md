@@ -124,8 +124,8 @@ final machine-readable JSON.
   [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Successful attestations are
   bound to exact portable execution-spec fingerprints; trace, warmup, timing, reset, and
   replay each use fresh processes and environments that never run dynamic contract validation.
-  Malformed v2 providers stop before dependent workloads, while historical v1 providers remain
-  diagnostic-only.
+  Providers that do not declare a conforming Turbo Vector API v2 contract stop before
+  construction and dependent workloads.
 - Published TurboBench releases 1.0.3 through 2.0.6 ran mutable Turbo API validation inside
   workload processes.
   Bundles from those versions may remain structurally intact, but their performance evidence is

@@ -12,7 +12,6 @@ import argparse
 import hashlib
 import importlib
 import importlib.metadata
-import inspect
 import os
 import shutil
 import tempfile
@@ -42,7 +41,8 @@ from turbobench.profiles import (
 from turbobench.turbo_api import (
     TurboContractError,
     declared_api_version,
-    legacy_report,
+    outside_turbo_contract_report,
+    unsupported_api_report,
     validate_constructor,
     validate_environment,
 )
@@ -361,7 +361,7 @@ class Adapter:
         self.profile = profile
         self.provider = provider
         self.native_discrete = native_discrete
-        self.contract_report = contract_report or legacy_report(provider, None)
+        self.contract_report = contract_report or outside_turbo_contract_report(provider)
         self.attestation_sha256 = attestation_sha256
         self.instance_id = uuid.uuid4().hex
         self.closed = False
@@ -842,7 +842,7 @@ class FakeAdapter:
         self.step_index = 0
         self._state = np.arange(shape, dtype=np.int64)
         self.in_promo = False
-        self.contract_report = contract_report or legacy_report(provider, None)
+        self.contract_report = contract_report or outside_turbo_contract_report(provider)
         self.attestation_sha256 = attestation_sha256
         self.instance_id = uuid.uuid4().hex
         self.closed = False
@@ -1343,11 +1343,8 @@ def _construct_turbo_workload_environment(
     api_version = declared_api_version(environment_type)
     kwargs = dict(options)
     kwargs.pop("state", None)  # state_catalog is the sole benchmark start selector
-    if api_version == 1:
-        parameters = inspect.signature(environment_type).parameters
-        kwargs = {name: value for name, value in kwargs.items() if name in parameters}
-    elif api_version != 2:
-        raise TurboContractError(legacy_report(provider, api_version))
+    if api_version != 2:
+        raise TurboContractError(unsupported_api_report(provider, api_version))
     return environment_type(game=game, **kwargs)
 
 
@@ -1396,17 +1393,13 @@ def _probe_contract(
                 preflight = validate_constructor(environment_type, provider)
                 if not preflight["passed"]:
                     return preflight, instance_id, True
-            elif api_version != 1:
-                return legacy_report(provider, api_version), instance_id, True
+            else:
+                return unsupported_api_report(provider, api_version), instance_id, True
             env = _construct_turbo_workload_environment(
                 environment_type, provider, game, options
             )
             instance_id = uuid.uuid4().hex
-            report = (
-                validate_environment(environment_type, env, provider)
-                if api_version == 2
-                else legacy_report(provider, 1)
-            )
+            report = validate_environment(environment_type, env, provider)
         finally:
             if env is not None:
                 env.close()
