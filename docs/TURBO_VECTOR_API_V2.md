@@ -110,8 +110,8 @@ its own subprocess, and that process closes its environment and exits. Trace,
 warmup, timing, reset-distribution, and replay processes construct fresh
 environments, require a matching successful attestation, and never rerun dynamic
 contract validation. A failed v2 report is recorded and dependent execution
-stops. Historical v1 providers may run only diagnostically and are never
-promotable. API validity is independent from semantic parity and is required by
+stops. Turbo providers that do not declare API v2 are rejected before workload
+construction. API validity is independent from semantic parity and is required by
 official-claim and self-verification gates.
 
 Each validation emits a portable

@@ -5,12 +5,13 @@ from types import MappingProxyType
 from typing import ClassVar
 
 import numpy as np
+import pytest
 
 from turbobench.runner import _construct_turbo_workload_environment
 from turbobench.turbo_api import (
     CAPABILITY_KEYS,
     COMMON_CONSTRUCTOR_DEFAULTS,
-    legacy_report,
+    TurboContractError,
     validate_constructor,
     validate_environment,
 )
@@ -295,26 +296,31 @@ def test_malformed_v2_is_rejected_before_construction() -> None:
     assert constructions == 0
 
 
-def test_v1_is_runnable_but_not_promotable() -> None:
-    report = legacy_report("legacy", 1)
-    assert report["passed"]
-    assert not report["promotable"]
+def test_v1_is_rejected_before_construction() -> None:
+    constructions = 0
 
     class Legacy:
         metadata: ClassVar[dict[str, object]] = {"turbo_api_version": 1}
 
         def __init__(self, game, num_envs=1):
+            nonlocal constructions
+            constructions += 1
             self.game = game
             self.num_envs = num_envs
 
-    env = _construct_turbo_workload_environment(
-        Legacy,
-        "legacy",
-        "Legacy-v0",
-        {"num_envs": 3, "transport": "numpy", "state_catalog": ["Start"]},
-    )
-    assert env.game == "Legacy-v0"
-    assert env.num_envs == 3
+    with pytest.raises(TurboContractError) as caught:
+        _construct_turbo_workload_environment(
+            Legacy,
+            "legacy",
+            "Legacy-v0",
+            {"num_envs": 3, "transport": "numpy", "state_catalog": ["Start"]},
+        )
+
+    report = caught.value.report
+    assert not report["passed"]
+    assert not report["promotable"]
+    assert report["errors"] == ["Turbo Vector API v1 is unsupported; provider must declare v2"]
+    assert constructions == 0
 
 
 def test_torch_is_imported_lazily_for_numpy_validation(monkeypatch) -> None:
