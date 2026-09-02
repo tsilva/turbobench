@@ -163,11 +163,12 @@ def _release_to_resolved(
         if definition.lineage in {"stable-retro", "vizdoom"}
         else definition.lineage
     )
+    import_name, environment_class = _runtime_contract(definition, candidate.version)
     return ResolvedProvider(
         provider=definition.id,
         adapter=definition.adapter,
         distribution=definition.distribution,
-        import_name=definition.import_name,
+        import_name=import_name,
         version=candidate.version,
         source_kind="pypi",
         source_identity=f"pypi:{definition.distribution}=={candidate.version}",
@@ -177,7 +178,7 @@ def _release_to_resolved(
         release_files=candidate.files,
         compatibility_lineage=lineage,
         diagnostic_reasons=diagnostic_reasons,
-        environment_class=definition.environment_class,
+        environment_class=environment_class,
     )
 
 
@@ -374,11 +375,12 @@ def resolve_checkout(
         if definition.lineage in {"stable-retro", "vizdoom"}
         else definition.lineage
     )
+    import_name, environment_class = _runtime_contract(definition, version)
     return ResolvedProvider(
         provider=definition.id,
         adapter=definition.adapter,
         distribution=definition.distribution,
-        import_name=definition.import_name,
+        import_name=import_name,
         version=version,
         source_kind="checkout",
         source_identity=source_identity,
@@ -389,7 +391,7 @@ def resolve_checkout(
         tree=tree,
         compatibility_lineage=lineage,
         diagnostic_reasons=reasons,
-        environment_class=definition.environment_class,
+        environment_class=environment_class,
     )
 
 
@@ -427,11 +429,12 @@ def resolve_artifact(
         if definition.lineage in {"stable-retro", "vizdoom"}
         else definition.lineage
     )
+    import_name, environment_class = _runtime_contract(definition, str(version))
     return ResolvedProvider(
         provider=definition.id,
         adapter=definition.adapter,
         distribution=definition.distribution,
-        import_name=definition.import_name,
+        import_name=import_name,
         version=str(version),
         source_kind="artifact",
         source_identity=f"wheel:sha256:{digest}:{path.name}",
@@ -441,8 +444,42 @@ def resolve_artifact(
         release_files=(selected,),
         selected_artifact=selected,
         compatibility_lineage=lineage,
-        environment_class=definition.environment_class,
+        environment_class=environment_class,
     )
+
+
+def _runtime_contract(
+    definition: ProviderDefinition, version: str
+) -> tuple[str, str | None]:
+    """Resolve package-module renames for still-eligible exact releases."""
+
+    parsed = Version(version)
+    legacy: dict[str, tuple[Version, str, str]] = {
+        "env-supermariobrosnes-turbo-emu": (
+            Version("0.7.1"),
+            "supermariobrosnes_turbo",
+            "SuperMarioBrosNesTurboVecEnv",
+        ),
+        "env-breakoutatari2600-turbo-native": (
+            Version("0.5.8"),
+            "breakout_turbo_env",
+            "BreakoutVecEnv",
+        ),
+        "env-stableretro-turbo": (
+            Version("1.0.1.post45"),
+            "stable_retro",
+            "RetroVecEnv",
+        ),
+        "env-vizdoom-turbo": (
+            Version("1.3.0.post28"),
+            "vizdoom_turbo",
+            "VizdoomTurboVecEnv",
+        ),
+    }
+    contract = legacy.get(definition.id)
+    if contract is not None and parsed < contract[0]:
+        return contract[1], contract[2]
+    return definition.import_name, definition.environment_class
 
 
 def _git(root: Path, *args: str) -> str:

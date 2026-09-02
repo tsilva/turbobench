@@ -1,4 +1,4 @@
-schema = "turbobench.workload-profile/v1"
+schema = "turbobench.workload-profile/v2"
 id = "supermario/world1-v1"
 logical_environment = "supermario"
 game = "SuperMarioBros-Nes-v0"
@@ -30,10 +30,16 @@ layout = "chw"
 resize_algorithm = "area"
 maxpool_last_two = false
 
-[benchmark]
-shapes = [1, 16, 32]
-steps = 250
-correctness_steps = 256
+[run]
+action_stream_version = "seeded-random-with-directed-prefix/v1"
+seed = 123
+measurement_shapes = [1, 16, 32]
+quick_parity_steps = 32
+full_parity_steps = 4096
+measurement_steps = 256
+warmup_pairs = 1
+light_pairs = 2
+full_pairs = 7
 
 [parity]
 authority = "stable-retro"
@@ -41,12 +47,10 @@ authority_version = "1.0.1"
 candidates = ["env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"]
 checks = ["action-identity", "transition-exact", "reset-exact", "snapshot-continuation", "required-info"]
 shapes = [1, 4]
-steps = 4096
 quick_shapes = [4]
-quick_steps = 32
-seed = 123
 snapshot_prefix_steps = 128
 snapshot_suffix_steps = 128
+reset_samples = 256
 
 [promo]
 kind = "mario-imported-v1"

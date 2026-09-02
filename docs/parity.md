@@ -51,8 +51,11 @@ turbobench verify-parity /external/evidence/receipt \
 overrides, version selectors, and checkout selectors are diagnostic. Their
 receipts cannot satisfy the canonical release gate.
 
-Every receipt also contains an exact deterministic correctness trace for the
-same provider artifacts. A later `compare` run may use
-`--parity-receipt /external/evidence/receipt` to reuse that trace. TurboBench
-accepts it only when the provider artifact digests, environment semantics,
-lane shapes, and required action-stream prefix match the benchmark exactly.
+The parity trace uses the same deterministic, prefix-compatible action stream
+as comparison correctness and timing. A later `compare` run may repeat
+`--parity-receipt PATH` to reuse matching shapes. One receipt can directly
+cover an authority/candidate comparison. Two receipts for the selected Turbo
+artifacts can establish equality through the same exact authority. Missing
+shapes run selected-pair correctness normally; comparison never starts an
+unselected authority. Receipt integrity, profile, artifact, authority,
+conversion, or action-stream mismatches fail closed.

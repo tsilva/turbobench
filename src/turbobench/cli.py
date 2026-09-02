@@ -14,7 +14,6 @@ from turbobench.assets import discover_assets
 from turbobench.bundle import verify_bundle
 from turbobench.engine import ComparisonOptions, generate_promo_for_bundle, run_comparison
 from turbobench.parity import ParityOptions, run_parity, verify_parity_receipt
-from turbobench.parity_profiles import load_parity_profiles
 from turbobench.profiles import PROFILES, get_profile, profile_hash
 from turbobench.providers import load_providers, parse_provider_ref
 from turbobench.system import host_record, prerequisites
@@ -53,8 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--shapes", type=_shapes, help="diagnostic comma-separated shape override")
     compare.add_argument(
         "--parity-receipt",
+        action="append",
+        default=[],
         type=Path,
-        help="reuse exact compatible parity evidence instead of correctness traces",
+        help="reuse compatible parity evidence; may be supplied more than once",
     )
 
     parity = commands.add_parser(
@@ -195,10 +196,12 @@ def _providers_list() -> None:
 
 
 def _profiles_list() -> None:
-    parity_ids = set(load_parity_profiles())
     for profile in PROFILES.values():
-        parity = "\tparity" if profile.id in parity_ids else ""
-        print(f"{profile.id}\t{profile.game}\tshapes={','.join(map(str, profile.shapes))}\tproviders={','.join(profile.providers)}{parity}")
+        print(
+            f"{profile.id}\t{profile.game}"
+            f"\tshapes={','.join(map(str, profile.measurement_shapes))}"
+            f"\tproviders={','.join(profile.providers)}\tparity"
+        )
 
 
 def _compare(args: argparse.Namespace, command: list[str]) -> int:
@@ -214,7 +217,7 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
         python_minor=args.python_minor,
         steps=args.steps,
         shapes=args.shapes,
-        parity_receipt=args.parity_receipt,
+        parity_receipts=tuple(args.parity_receipt),
         command=("turbobench", *command),
         progress=_print_progress,
     )

@@ -9,10 +9,9 @@ from functools import lru_cache
 from importlib.resources import files
 from typing import Any
 
-from turbobench.model import ParityProfile, Profile
+from turbobench.model import Profile
 
-WORKLOAD_PROFILE_SCHEMA = "turbobench.workload-profile/v1"
-PARITY_PROFILE_SCHEMA = "turbobench.parity-profile/v1"
+WORKLOAD_PROFILE_SCHEMA = "turbobench.workload-profile/v2"
 STANDARD_CHECKS = frozenset(
     {
         "action-identity",
@@ -36,7 +35,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "info_float",
         "action_table",
         "observation",
-        "benchmark",
+        "run",
         "parity",
         "promo",
         "exact",
@@ -56,7 +55,19 @@ _OBSERVATION_KEYS = frozenset(
         "maxpool_last_two",
     }
 )
-_BENCHMARK_KEYS = frozenset({"shapes", "steps", "correctness_steps"})
+_RUN_KEYS = frozenset(
+    {
+        "action_stream_version",
+        "seed",
+        "measurement_shapes",
+        "quick_parity_steps",
+        "full_parity_steps",
+        "measurement_steps",
+        "warmup_pairs",
+        "light_pairs",
+        "full_pairs",
+    }
+)
 _PARITY_KEYS = frozenset(
     {
         "authority",
@@ -64,12 +75,10 @@ _PARITY_KEYS = frozenset(
         "candidates",
         "checks",
         "shapes",
-        "steps",
         "quick_shapes",
-        "quick_steps",
-        "seed",
         "snapshot_prefix_steps",
         "snapshot_suffix_steps",
+        "reset_samples",
     }
 )
 _PROMO_KEYS = frozenset({"kind", "steps", "completion_json"})
@@ -81,7 +90,6 @@ _EXACT_KEYS = frozenset(
 @dataclass(frozen=True)
 class ProfileDocument:
     profile: Profile
-    parity: ParityProfile
     payload: dict[str, Any]
     toml: str
 
@@ -112,12 +120,12 @@ def get_profile_document(profile_id: str) -> ProfileDocument:
 def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocument:
     _require_keys(raw, _TOP_LEVEL_KEYS, source, optional=frozenset({"asset"}))
     observation = _mapping(raw["observation"], source, "observation")
-    benchmark = _mapping(raw["benchmark"], source, "benchmark")
+    run = _mapping(raw["run"], source, "run")
     parity = _mapping(raw["parity"], source, "parity")
     promo = _mapping(raw["promo"], source, "promo")
     exact = _mapping(raw["exact"], source, "exact")
     _require_keys(observation, _OBSERVATION_KEYS, source)
-    _require_keys(benchmark, _BENCHMARK_KEYS, source)
+    _require_keys(run, _RUN_KEYS, source)
     _require_keys(parity, _PARITY_KEYS, source)
     _require_keys(promo, _PROMO_KEYS, source)
     _require_keys(exact, _EXACT_KEYS, source)
@@ -135,7 +143,7 @@ def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocum
         str(name): tuple(map(str, labels))
         for name, labels in _mapping(raw["action_table"], source, "action_table").items()
     }
-    benchmark_shapes = tuple(map(int, benchmark["shapes"]))
+    measurement_shapes = tuple(map(int, run["measurement_shapes"]))
     parity_shapes = tuple(map(int, parity["shapes"]))
     quick_shapes = tuple(map(int, parity["quick_shapes"]))
     completion = json.loads(str(promo["completion_json"]))
@@ -157,7 +165,7 @@ def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocum
         logical_environment=str(raw["logical_environment"]),
         game=str(raw["game"]),
         providers=providers,
-        shapes=benchmark_shapes,
+        measurement_shapes=measurement_shapes,
         states=states,
         semantic_actions=semantic_actions,
         action_table=action_table,
@@ -173,8 +181,23 @@ def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocum
         layout=str(observation["layout"]),
         resize_algorithm=str(observation["resize_algorithm"]),
         maxpool_last_two=bool(observation["maxpool_last_two"]),
-        benchmark_steps=int(benchmark["steps"]),
-        correctness_steps=int(benchmark["correctness_steps"]),
+        action_stream_version=str(run["action_stream_version"]),
+        run_seed=int(run["seed"]),
+        quick_parity_steps=int(run["quick_parity_steps"]),
+        full_parity_steps=int(run["full_parity_steps"]),
+        measurement_steps=int(run["measurement_steps"]),
+        warmup_pairs=int(run["warmup_pairs"]),
+        light_pairs=int(run["light_pairs"]),
+        full_pairs=int(run["full_pairs"]),
+        authority=str(parity["authority"]),
+        authority_version=str(parity["authority_version"]),
+        candidates=tuple(map(str, parity["candidates"])),
+        checks=tuple(map(str, parity["checks"])),
+        parity_shapes=parity_shapes,
+        quick_parity_shapes=quick_shapes,
+        snapshot_prefix_steps=int(parity["snapshot_prefix_steps"]),
+        snapshot_suffix_steps=int(parity["snapshot_suffix_steps"]),
+        reset_samples=int(parity["reset_samples"]),
         promo_kind=str(promo["kind"]),
         promo_steps=int(promo["steps"]),
         completion=completion,
@@ -184,46 +207,60 @@ def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocum
             exact["allowed_representation_conversion"]
         ),
     )
-    parity_profile = ParityProfile(
-        schema=PARITY_PROFILE_SCHEMA,
-        id=profile_id,
-        base_profile=profile_id,
-        authority=str(parity["authority"]),
-        authority_version=str(parity["authority_version"]),
-        candidates=tuple(map(str, parity["candidates"])),
-        checks=tuple(map(str, parity["checks"])),
-        shapes=parity_shapes,
-        steps=int(parity["steps"]),
-        quick_shapes=quick_shapes,
-        quick_steps=int(parity["quick_steps"]),
-        seed=int(parity["seed"]),
-        snapshot_prefix_steps=int(parity["snapshot_prefix_steps"]),
-        snapshot_suffix_steps=int(parity["snapshot_suffix_steps"]),
-        allowed_representation_conversion=profile.allowed_representation_conversion,
-    )
-    _validate(profile, parity_profile, source)
-    return ProfileDocument(profile=profile, parity=parity_profile, payload=raw, toml=text)
+    _validate(profile, source)
+    return ProfileDocument(profile=profile, payload=raw, toml=text)
 
 
-def _validate(profile: Profile, parity: ParityProfile, source: str) -> None:
+def _validate(profile: Profile, source: str) -> None:
     if not profile.providers or len(set(profile.providers)) != len(profile.providers):
         raise ValueError(f"workload providers must be non-empty and unique in {source}")
     if not profile.states or not profile.semantic_actions:
         raise ValueError(f"workload states and semantic actions must be non-empty in {source}")
     if any(action not in profile.action_table for action in profile.semantic_actions):
         raise ValueError(f"semantic action is absent from the action table in {source}")
-    if any(shape <= 0 for shape in (*profile.shapes, *parity.shapes, *parity.quick_shapes)):
+    if any(
+        shape <= 0
+        for shape in (
+            *profile.measurement_shapes,
+            *profile.parity_shapes,
+            *profile.quick_parity_shapes,
+        )
+    ):
         raise ValueError(f"workload shapes must be positive in {source}")
-    if profile.benchmark_steps <= 0 or profile.correctness_steps <= 0:
-        raise ValueError(f"benchmark step counts must be positive in {source}")
-    if parity.authority not in profile.providers or not parity.candidates:
+    if len(set(profile.measurement_shapes)) != len(profile.measurement_shapes):
+        raise ValueError(f"measurement shapes must be unique in {source}")
+    if profile.measurement_shapes[:1] != (1,):
+        raise ValueError(f"measurement shapes must begin with shape 1 in {source}")
+    if any(
+        count <= 0
+        for count in (
+            profile.quick_parity_steps,
+            profile.full_parity_steps,
+            profile.measurement_steps,
+            profile.warmup_pairs,
+            profile.light_pairs,
+            profile.full_pairs,
+            profile.snapshot_prefix_steps,
+            profile.snapshot_suffix_steps,
+            profile.reset_samples,
+        )
+    ):
+        raise ValueError(f"run budgets must be positive in {source}")
+    if profile.quick_parity_steps > profile.full_parity_steps:
+        raise ValueError(f"quick parity cannot exceed full parity in {source}")
+    if profile.light_pairs > profile.full_pairs:
+        raise ValueError(f"light pairs cannot exceed full pairs in {source}")
+    if profile.action_stream_version != "seeded-random-with-directed-prefix/v1":
+        raise ValueError(f"unsupported action stream in {source}")
+    if profile.authority not in profile.providers or not profile.candidates:
         raise ValueError(f"parity providers are incompatible in {source}")
-    if any(not parity.accepts(item) or item not in profile.providers for item in parity.candidates):
+    if any(
+        not profile.accepts(item) or item not in profile.providers
+        for item in profile.candidates
+    ):
         raise ValueError(f"invalid parity candidate in {source}")
-    if not parity.checks or any(item not in STANDARD_CHECKS for item in parity.checks):
+    if not profile.checks or any(item not in STANDARD_CHECKS for item in profile.checks):
         raise ValueError(f"unknown or empty parity check list in {source}")
-    if parity.steps < 2 or not 2 <= parity.quick_steps <= parity.steps:
-        raise ValueError(f"invalid parity step counts in {source}")
     if not profile.native_transition_exact:
         raise ValueError(f"unified workload must require exact native transitions in {source}")
 

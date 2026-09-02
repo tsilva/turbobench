@@ -1,4 +1,4 @@
-"""Immutable v1 workload profiles and deterministic semantic action streams."""
+"""Immutable workload profiles and deterministic semantic action streams."""
 
 from __future__ import annotations
 
@@ -47,34 +47,21 @@ def get_profile(profile_id: str) -> Profile:
         raise ValueError(f"unknown profile {profile_id!r}") from exc
 
 
-def benchmark_actions(profile: Profile, shape: int, steps: int | None = None) -> np.ndarray:
-    if shape <= 0:
-        raise ValueError("shape must be positive")
-    count = profile.benchmark_steps if steps is None else steps
-    if count <= 0:
-        raise ValueError("steps must be positive")
-    step_index = np.arange(count, dtype=np.int64)[:, None]
-    lane_index = np.arange(shape, dtype=np.int64)[None, :]
-    if profile.logical_environment == "vizdoom-basic":
-        # Movement/noop is the common scalar/native contract. Weapon-sprite
-        # presentation differs between the upstream RGB renderer and Turbo's
-        # indexed renderer, so firing is retained in the advertised action
-        # table but excluded from the canonical raw-frame workload.
-        return ((step_index // 8 + lane_index) % len(profile.semantic_actions)).astype(np.int16)
-    action_count = len(profile.semantic_actions)
-    # Varied by both lane and step, deterministic, and never generated in a timed section.
-    return ((step_index * 17 + lane_index * 7 + (step_index // 4) * 3) % action_count).astype(np.int16)
-
-
-def parity_actions(profile: Profile, shape: int, steps: int, *, seed: int = 123) -> np.ndarray:
-    """Return a reproducible random semantic-action trace for fidelity testing."""
+def canonical_actions(
+    profile: Profile,
+    shape: int,
+    steps: int | None = None,
+    *,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Return the one deterministic prefix-compatible workload action stream."""
 
     if shape <= 0:
         raise ValueError("shape must be positive")
-    count = steps
+    count = profile.measurement_steps if steps is None else steps
     if count <= 0:
         raise ValueError("steps must be positive")
-    generator = np.random.default_rng(seed)
+    generator = np.random.default_rng(profile.run_seed if seed is None else seed)
     actions = generator.integers(
         0,
         len(profile.semantic_actions),

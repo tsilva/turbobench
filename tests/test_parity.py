@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from turbobench.cli import main
+from turbobench.cli import build_parser, main
+from turbobench.engine import ComparisonOptions, run_comparison_resolved
 from turbobench.parity import (
     ParityOptions,
     _finalize_parity_manifest,
@@ -16,7 +17,6 @@ from turbobench.parity import (
     run_parity_resolved,
     verify_parity_receipt,
 )
-from turbobench.parity_profiles import get_parity_profile
 from turbobench.profiles import get_profile
 from turbobench.resolution import fake_resolved, with_runtime
 from turbobench.runtime import prepare_runtime
@@ -25,18 +25,16 @@ from turbobench.runtime import prepare_runtime
 @pytest.fixture
 def parity_receipt(tmp_path: Path) -> Path:
     profile = get_profile("supermario/world1-v1")
-    parity_profile = get_parity_profile(profile.id)
     authority = prepare_runtime(
         with_runtime(fake_resolved("stable-retro"), version="1.0.1")
     )
     candidate = prepare_runtime(fake_resolved("env-supermariobrosnes-turbo-emu"))
     receipt, result = run_parity_resolved(
-        parity_profile,
         profile,
         authority,
         candidate,
         tmp_path / "parity-receipt",
-        ParityOptions(steps=4, shapes=(1,)),
+        ParityOptions(steps=256, shapes=(1,)),
         private_assets={},
         portable_assets={"required": False, "available": True, "assets": []},
     )
@@ -49,6 +47,7 @@ def test_parity_receipt_verifies_exact_checks(parity_receipt: Path) -> None:
 
     assert result["passed"]
     assert result["artifact_count"] > 0
+    assert not list(parity_receipt.rglob("*benchmark-gate*"))
 
 
 def test_ram_evidence_is_required_only_where_both_adapters_expose_it() -> None:
@@ -64,7 +63,7 @@ def test_ram_evidence_is_required_only_where_both_adapters_expose_it() -> None:
     assert not _requires_ram(get_profile("vizdoom/basic-v1"), vizdoom, vizdoom_turbo)
 
 
-def test_benchmark_reuse_requires_same_artifacts_and_covered_shapes(
+def test_benchmark_reuses_matching_shapes_and_executes_missing_shapes(
     parity_receipt: Path,
 ) -> None:
     profile = get_profile("supermario/world1-v1")
@@ -74,23 +73,158 @@ def test_benchmark_reuse_requires_same_artifacts_and_covered_shapes(
     candidate = prepare_runtime(fake_resolved("env-supermariobrosnes-turbo-emu"))
 
     accepted = parity_gate_for_benchmark(
-        parity_receipt, profile, (candidate, authority), (1,)
+        (parity_receipt,), profile, (candidate, authority), (1,)
     )
-    rejected = parity_gate_for_benchmark(
-        parity_receipt, profile, (candidate, authority), (16,)
-    )
-    too_long = parity_gate_for_benchmark(
-        parity_receipt,
-        replace(profile, correctness_steps=257),
-        (candidate, authority),
-        (1,),
+    partial = parity_gate_for_benchmark(
+        (parity_receipt,), profile, (candidate, authority), (1, 16)
     )
 
     assert accepted["passed"]
-    assert not rejected["passed"]
-    assert "parity receipt does not cover every benchmark lane shape" in rejected["errors"]
-    assert not too_long["passed"]
-    assert "parity receipt benchmark workload is too short for shape 1" in too_long["errors"]
+    assert accepted["checks"]["1"]["source"] == "direct receipt"
+    assert partial["passed"]
+    assert set(partial["checks"]) == {"1"}
+
+
+def test_two_receipts_support_transitive_turbo_pair_reuse(tmp_path: Path) -> None:
+    profile = get_profile("supermario/world1-v1")
+    authority = prepare_runtime(
+        with_runtime(fake_resolved("stable-retro"), version="1.0.1")
+    )
+    left = prepare_runtime(fake_resolved("env-supermariobrosnes-turbo-emu"))
+    right = prepare_runtime(fake_resolved("env-stableretro-turbo"))
+    receipts = []
+    for index, candidate in enumerate((left, right)):
+        receipt, result = run_parity_resolved(
+            profile,
+            authority,
+            candidate,
+            tmp_path / f"receipt-{index}",
+            ParityOptions(steps=256, shapes=(1,)),
+            private_assets={},
+            portable_assets={"required": False, "available": True, "assets": []},
+        )
+        assert result["passed"]
+        receipts.append(receipt)
+
+    gate = parity_gate_for_benchmark(tuple(receipts), profile, (left, right), (1, 16))
+
+    assert gate["passed"]
+    assert gate["checks"]["1"]["source"] == "transitive receipts"
+    assert len(gate["checks"]["1"]["receipt_ids"]) == 2
+    assert "16" not in gate["checks"]
+
+
+def test_repeatable_parity_receipt_option_is_preserved() -> None:
+    args = build_parser().parse_args(
+        [
+            "compare",
+            "supermario/world1-v1",
+            "--left",
+            "env-supermariobrosnes-turbo-emu",
+            "--right",
+            "env-stableretro-turbo",
+            "--parity-receipt",
+            "one",
+            "--parity-receipt",
+            "two",
+        ]
+    )
+    assert args.parity_receipt == [Path("one"), Path("two")]
+
+
+def test_comparison_reuses_one_shape_and_executes_a_missing_shape(
+    parity_receipt: Path, tmp_path: Path
+) -> None:
+    profile = get_profile("supermario/world1-v1")
+    authority = prepare_runtime(
+        with_runtime(fake_resolved("stable-retro"), version="1.0.1")
+    )
+    candidate = prepare_runtime(fake_resolved("env-supermariobrosnes-turbo-emu"))
+
+    _bundle, result = run_comparison_resolved(
+        profile,
+        candidate,
+        authority,
+        tmp_path / "partial-reuse",
+        ComparisonOptions(
+            quick=True,
+            shapes=(1, 16),
+            parity_receipts=(parity_receipt,),
+        ),
+        private_assets={},
+        portable_assets={"required": False, "available": True, "assets": []},
+    )
+
+    correctness = result["comparison"]["shapes"]
+    assert correctness["1"]["correctness"]["source"] == "direct receipt"
+    assert correctness["16"]["correctness"]["source"] == "executed pair"
+
+
+def test_receipt_for_a_different_candidate_artifact_fails_closed(
+    parity_receipt: Path,
+) -> None:
+    profile = get_profile("supermario/world1-v1")
+    authority = prepare_runtime(
+        with_runtime(fake_resolved("stable-retro"), version="1.0.1")
+    )
+    other_candidate = prepare_runtime(
+        with_runtime(
+            fake_resolved("env-supermariobrosnes-turbo-emu"), version="9.9.9"
+        )
+    )
+
+    gate = parity_gate_for_benchmark(
+        (parity_receipt,), profile, (other_candidate, authority), (1,)
+    )
+
+    assert not gate["passed"]
+    assert any("different candidate artifact" in error for error in gate["errors"])
+
+
+def test_transitive_receipts_require_the_same_exact_authority(tmp_path: Path) -> None:
+    profile = get_profile("supermario/world1-v1")
+    authorities = (
+        prepare_runtime(with_runtime(fake_resolved("stable-retro"), version="1.0.1")),
+        prepare_runtime(
+            replace(
+                with_runtime(fake_resolved("stable-retro"), version="1.0.1"),
+                artifact_sha256="different-authority-artifact",
+            )
+        ),
+    )
+    candidates = (
+        prepare_runtime(fake_resolved("env-supermariobrosnes-turbo-emu")),
+        prepare_runtime(fake_resolved("env-stableretro-turbo")),
+    )
+    receipts = []
+    for index, (authority, candidate) in enumerate(zip(authorities, candidates, strict=True)):
+        receipt, _result = run_parity_resolved(
+            profile,
+            authority,
+            candidate,
+            tmp_path / f"different-authority-{index}",
+            ParityOptions(steps=256, shapes=(1,)),
+            private_assets={},
+            portable_assets={"required": False, "available": True, "assets": []},
+        )
+        receipts.append(receipt)
+
+    gate = parity_gate_for_benchmark(tuple(receipts), profile, candidates, (1,))
+
+    assert not gate["passed"]
+    assert "supplied parity receipts bind different authority artifacts" in gate["errors"]
+
+
+def test_parity_receipt_tampering_is_detected(
+    parity_receipt: Path,
+) -> None:
+    result_path = parity_receipt / "result.json"
+    result_path.write_text(result_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+    verification = verify_parity_receipt(parity_receipt)
+
+    assert not verification["passed"]
+    assert any("artifact" in error and "mismatch" in error for error in verification["errors"])
 
 
 def test_canonical_gate_rejects_short_or_non_pypi_receipt(
