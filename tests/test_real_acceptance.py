@@ -12,9 +12,9 @@ pytestmark = pytest.mark.acceptance
 
 
 REAL_PAIRS = (
-    ("supermario/canonical-v1", "env-supermariobrosnes-turbo-emu", "stable-retro"),
-    ("supermario/canonical-v1", "env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"),
-    ("supermario/canonical-v1", "env-stableretro-turbo", "stable-retro"),
+    ("supermario/world1-v1", "env-supermariobrosnes-turbo-emu", "stable-retro"),
+    ("supermario/world1-v1", "env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"),
+    ("supermario/world1-v1", "env-stableretro-turbo", "stable-retro"),
     ("breakout/start-v3", "env-breakoutatari2600-turbo-native", "env-stableretro-turbo"),
     ("breakout/start-v3", "env-breakoutatari2600-turbo-native", "stable-retro"),
     ("breakout/start-v3", "env-stableretro-turbo", "stable-retro"),

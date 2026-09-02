@@ -47,7 +47,7 @@ turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile as
 turbobench profiles list                 # list immutable workloads
 turbobench providers list                # list built-in and registered providers
 
-turbobench parity supermario/canonical-v2 \
+turbobench parity supermario/world1-v2 \
   --candidate env-supermariobrosnes-turbo-emu@checkout:/absolute/path/to/repo \
   --allow-dirty --quick                         # test current work diagnostically
 
@@ -87,7 +87,7 @@ final machine-readable JSON.
 
 - The controller supports Python 3.11 and newer. Provider runtimes default to CPython 3.14.
   `uv`, FFmpeg, and FFprobe are required.
-- Current performance profiles cover `supermario/canonical-v1`,
+- Current performance profiles cover `supermario/world1-v1`,
   `breakout/start-v3`, and `vizdoom/basic-v1`. Historical profiles remain
   available for verifying their existing result bundles. Shapes 1, 16, and 32
   are measured and reported independently.

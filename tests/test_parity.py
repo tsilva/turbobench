@@ -24,7 +24,7 @@ from turbobench.runtime import prepare_runtime
 
 @pytest.fixture
 def parity_receipt(tmp_path: Path) -> Path:
-    profile = get_profile("supermario/canonical-v2")
+    profile = get_profile("supermario/world1-v2")
     parity_profile = get_parity_profile(profile.id)
     authority = prepare_runtime(
         with_runtime(fake_resolved("stable-retro"), version="1.0.1")
@@ -58,7 +58,7 @@ def test_ram_evidence_is_required_only_where_both_adapters_expose_it() -> None:
     vizdoom = fake_resolved("vizdoom")
     vizdoom_turbo = fake_resolved("env-vizdoom-turbo")
 
-    assert _requires_ram(get_profile("supermario/canonical-v2"), stable, stable_turbo)
+    assert _requires_ram(get_profile("supermario/world1-v2"), stable, stable_turbo)
     assert _requires_ram(get_profile("breakout/start-v2"), stable, stable_turbo)
     assert not _requires_ram(get_profile("breakout/start-v2"), stable, breakout)
     assert not _requires_ram(get_profile("vizdoom/basic-v2"), vizdoom, vizdoom_turbo)
@@ -67,7 +67,7 @@ def test_ram_evidence_is_required_only_where_both_adapters_expose_it() -> None:
 def test_benchmark_reuse_requires_same_artifacts_and_covered_shapes(
     parity_receipt: Path,
 ) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     authority = prepare_runtime(
         with_runtime(fake_resolved("stable-retro"), version="1.0.1")
     )

@@ -104,7 +104,7 @@ def test_button_mapping_translates_semantics_through_advertised_order() -> None:
 def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> None:
     direct = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
-    for profile_id in ("supermario/canonical-v1", "breakout/start-v1"):
+    for profile_id in ("supermario/world1-v1", "breakout/start-v1"):
         profile = get_profile(profile_id)
         np.testing.assert_array_equal(
             _canonical_raw_rgb(expanded, profile),
@@ -113,7 +113,7 @@ def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> Non
 
 
 def test_exact_mario_raw_frames_decode_to_lossless_native_rgb565_codes() -> None:
-    profile = get_profile("supermario/canonical-v2")
+    profile = get_profile("supermario/world1-v2")
     native = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
     np.testing.assert_array_equal(
@@ -193,7 +193,7 @@ def test_exact_upstream_atari_separates_policy_bytes_from_render_transport() -> 
 
 
 def test_scalar_retro_overlay_exposes_every_canonical_state(tmp_path: Path) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     rom = tmp_path / "game.nes"
     rom.write_bytes(b"rom")
     info = tmp_path / "data.json"
@@ -449,7 +449,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
     env = StateCatalogEnv()
     adapter = Adapter(
         env,
-        get_profile("supermario/canonical-v1"),
+        get_profile("supermario/world1-v1"),
         "env-supermariobrosnes-turbo-emu",
         native_discrete=True,
     )
@@ -507,7 +507,7 @@ def test_exact_profile_rejects_reward_delta_inside_v1_tolerance() -> None:
 
 
 def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     actions = promo_actions(profile)
     base = {
         "operation": "promo",

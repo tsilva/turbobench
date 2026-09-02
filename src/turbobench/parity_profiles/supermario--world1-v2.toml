@@ -1,6 +1,6 @@
 schema = "turbobench.parity-profile/v1"
-id = "supermario/canonical-v2"
-base_profile = "supermario/canonical-v2"
+id = "supermario/world1-v2"
+base_profile = "supermario/world1-v2"
 authority = "stable-retro"
 authority_version = "1.0.1"
 candidates = ["env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"]

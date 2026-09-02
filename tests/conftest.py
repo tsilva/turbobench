@@ -12,7 +12,7 @@ from turbobench.runtime import prepare_runtime
 
 @pytest.fixture
 def fake_bundle(tmp_path: Path) -> Path:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     left = prepare_runtime(fake_resolved("fake-slow", speed=1.0))
     right = prepare_runtime(fake_resolved("fake-fast", speed=2.0))
     bundle, _result = run_comparison_resolved(
@@ -25,4 +25,3 @@ def fake_bundle(tmp_path: Path) -> Path:
         portable_assets={"required": False, "available": True, "assets": []},
     )
     return bundle
-

@@ -51,7 +51,7 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
     output = tmp_path / "bundle"
 
     def fake_run(profile, left, right, bundle, options):
-        assert profile == "supermario/canonical-v1"
+        assert profile == "supermario/world1-v1"
         assert left.provider == "env-supermariobrosnes-turbo-emu"
         assert right.provider == "env-stableretro-turbo"
         options.report_progress("Resolving package artifacts")
@@ -66,7 +66,7 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
     assert main(
         [
             "compare",
-            "supermario/canonical-v1",
+            "supermario/world1-v1",
             "--left",
             "env-supermariobrosnes-turbo-emu@latest",
             "--right",
