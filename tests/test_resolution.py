@@ -11,6 +11,7 @@ from turbobench.providers import BUILTIN_PROVIDERS, parse_provider_ref
 from turbobench.resolution import (
     _checkout_version,
     _enforce_lineage,
+    _runtime_contract,
     pypi_candidates,
     resolve_artifact,
     resolve_checkout,
@@ -25,6 +26,37 @@ def test_standardized_breakout_provider_imports() -> None:
         BUILTIN_PROVIDERS["env-breakoutatari2600-turbo-native"].import_name
         == "env_breakoutatari2600_turbo_native"
     )
+
+
+@pytest.mark.parametrize(
+    ("provider", "version", "expected"),
+    [
+        (
+            "env-supermariobrosnes-turbo-emu",
+            "0.7.0",
+            ("supermariobrosnes_turbo", "SuperMarioBrosNesTurboVecEnv"),
+        ),
+        (
+            "env-breakoutatari2600-turbo-native",
+            "0.5.7",
+            ("breakout_turbo_env", "BreakoutVecEnv"),
+        ),
+        (
+            "env-stableretro-turbo",
+            "1.0.1.post44",
+            ("stable_retro", "RetroVecEnv"),
+        ),
+        (
+            "env-vizdoom-turbo",
+            "1.3.0.post27",
+            ("vizdoom_turbo", "VizdoomTurboVecEnv"),
+        ),
+    ],
+)
+def test_still_eligible_pre_rename_releases_resolve_their_runtime_contract(
+    provider: str, version: str, expected: tuple[str, str]
+) -> None:
+    assert _runtime_contract(BUILTIN_PROVIDERS[provider], version) == expected
     assert (
         BUILTIN_PROVIDERS["env-stableretro-turbo"].import_name
         == "env_stableretro_turbo"

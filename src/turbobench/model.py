@@ -84,7 +84,7 @@ class Profile:
     logical_environment: str
     game: str
     providers: tuple[str, ...]
-    shapes: tuple[int, ...]
+    measurement_shapes: tuple[int, ...]
     states: tuple[str, ...]
     semantic_actions: tuple[str, ...]
     action_table: dict[str, tuple[str, ...]]
@@ -100,8 +100,23 @@ class Profile:
     layout: str = "chw"
     resize_algorithm: str = "area"
     maxpool_last_two: bool = False
-    benchmark_steps: int = 250
-    correctness_steps: int = 64
+    action_stream_version: str = "seeded-random-with-directed-prefix/v1"
+    run_seed: int = 123
+    quick_parity_steps: int = 32
+    full_parity_steps: int = 4_096
+    measurement_steps: int = 256
+    warmup_pairs: int = 1
+    light_pairs: int = 2
+    full_pairs: int = 7
+    authority: str = ""
+    authority_version: str = ""
+    candidates: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+    parity_shapes: tuple[int, ...] = (1, 4)
+    quick_parity_shapes: tuple[int, ...] = (1,)
+    snapshot_prefix_steps: int = 128
+    snapshot_suffix_steps: int = 128
+    reset_samples: int = 256
     promo_kind: str = "deterministic"
     promo_steps: int = 1_200
     completion: dict[str, Any] = field(default_factory=dict)
@@ -111,27 +126,6 @@ class Profile:
 
     def compatible(self, left: str, right: str) -> bool:
         return left != right and left in self.providers and right in self.providers
-
-
-@dataclass(frozen=True)
-class ParityProfile:
-    """Strict declarative cross-provider parity commitment."""
-
-    schema: str
-    id: str
-    base_profile: str
-    authority: str
-    authority_version: str
-    candidates: tuple[str, ...]
-    checks: tuple[str, ...]
-    shapes: tuple[int, ...]
-    steps: int
-    quick_shapes: tuple[int, ...]
-    quick_steps: int
-    seed: int
-    snapshot_prefix_steps: int
-    snapshot_suffix_steps: int
-    allowed_representation_conversion: str
 
     def accepts(self, candidate: str) -> bool:
         return candidate in self.candidates and candidate != self.authority

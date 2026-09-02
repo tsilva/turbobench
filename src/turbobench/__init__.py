@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-__version__ = "2.0.5"
+__version__ = "2.0.6"
 DISTRIBUTION_NAME = "turbobench-cli"
-RESULT_SCHEMA = "turbobench.result/v1"
+RESULT_SCHEMA = "turbobench.result/v2"

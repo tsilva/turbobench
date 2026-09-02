@@ -16,15 +16,15 @@ clearly watermarked.
 
 ## Install
 
-Install [turbobench-cli 2.0.0](https://pypi.org/project/turbobench-cli/2.0.0/)
+Install [turbobench-cli 2.0.6](https://pypi.org/project/turbobench-cli/2.0.6/)
 from PyPI:
 
 ```bash
-uv tool install turbobench-cli==2.0.0
+uv tool install turbobench-cli==2.0.6
 ```
 
 Alternatively, install it in an active virtual environment with
-`python -m pip install turbobench-cli==2.0.0`. The installed command and Python
+`python -m pip install turbobench-cli==2.0.6`. The installed command and Python
 import remain `turbobench`.
 
 For a development checkout:
@@ -71,6 +71,14 @@ turbobench compare breakout/start-v1 \
   --right env-stableretro-turbo@VERSION \
   --output turbobench-results/breakout-vs-stable-retro-turbo
 
+# Add one receipt for an authority/candidate pair, or two receipts against the
+# same authority to reuse transitive Turbo-versus-Turbo correctness evidence.
+turbobench compare breakout/start-v1 \
+  --left env-breakoutatari2600-turbo-native@VERSION \
+  --right env-stableretro-turbo@VERSION \
+  --parity-receipt /external/evidence/native-receipt \
+  --parity-receipt /external/evidence/stable-retro-turbo-receipt
+
 turbobench verify turbobench-results/vizdoom  # verify integrity and consistency
 turbobench report turbobench-results/vizdoom  # print the generated report
 turbobench promo turbobench-results/vizdoom --diagnostic
@@ -88,7 +96,9 @@ final machine-readable JSON.
   `uv`, FFmpeg, and FFprobe are required.
 - Current workload profiles are `supermario/world1-v1`, `breakout/start-v1`,
   and `vizdoom/basic-v1`. The same ID is used with `compare` and `parity`.
-  Benchmark shapes 1, 16, and 32 are measured and reported independently.
+  `compare --quick` performs selected-pair correctness and two shape-1 timing pairs.
+  Full `compare` starts with those same two shape-1 pairs, continues to seven pairs,
+  and then measures shapes 16 and 32. It records the first two pairs as light statistics.
 - Provider references accept `provider`, `provider@latest`, `provider@VERSION`,
   `provider@artifact:/absolute/path.whl`, and `provider@checkout:/absolute/path`.
   `latest` excludes prereleases, yanked releases,
@@ -106,6 +116,9 @@ final machine-readable JSON.
 - Exact release parity accepts only the final local wheel on the chosen canonical host.
   Checkout snapshots include tracked edits and nonignored untracked source, so developers
   do not need to commit before running a quick diagnostic check.
+- Comparisons validate only their selected pair and never prepare an original authority
+  unless that authority is itself selected. Compatible parity receipts may replace matching
+  correctness shapes; missing shapes are checked directly during the comparison.
 - Turbo providers are preflighted against the normative
   [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Contract reports
   are hash-bound into result bundles; malformed v2 providers stop before any

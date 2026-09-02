@@ -19,7 +19,7 @@ from turbobench.correctness import compare_replays, compare_traces
 from turbobench.model import Gate, Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
-    benchmark_actions,
+    canonical_actions,
     get_profile,
     profile_hash,
     profile_toml,
@@ -52,7 +52,7 @@ class ComparisonOptions:
     python_minor: str = "3.14"
     steps: int | None = None
     shapes: tuple[int, ...] | None = None
-    parity_receipt: Path | None = None
+    parity_receipts: tuple[Path, ...] = ()
     command: tuple[str, ...] = ()
     progress: Callable[[str], None] | None = dataclass_field(
         default=None, compare=False, repr=False
@@ -158,11 +158,10 @@ def run_comparison_resolved(
                 "quick": options.quick,
                 "steps": options.steps,
                 "shapes": options.shapes,
-                "parity_receipt_id": (
-                    read_json(options.parity_receipt / "manifest.json").get("receipt_id")
-                    if options.parity_receipt is not None
-                    else None
-                ),
+                "parity_receipt_ids": [
+                    read_json(receipt / "manifest.json").get("receipt_id")
+                    for receipt in options.parity_receipts
+                ],
             },
         }
     )
@@ -217,32 +216,31 @@ def run_comparison_resolved(
         )
 
     parity_gate = None
-    if options.parity_receipt is not None:
+    if options.parity_receipts:
         from turbobench.parity import parity_gate_for_benchmark
 
         parity_gate = parity_gate_for_benchmark(
-            options.parity_receipt, profile, (left, right), shapes
+            options.parity_receipts, profile, (left, right), shapes
         )
         if not parity_gate["passed"]:
             raise ValueError(
-                "parity receipt cannot satisfy benchmark correctness: "
+                "supplied parity receipt is incompatible: "
                 + "; ".join(parity_gate["errors"])
             )
-        write_json(
-            partial / "verification" / "parity-gate.json",
-            {key: value for key, value in parity_gate.items() if key != "checks"},
-        )
 
     correctness: dict[str, Any] = {}
     action_records: dict[str, Any] = {}
     for shape in shapes:
-        trace_actions = benchmark_actions(profile, shape, profile.correctness_steps)
+        trace_actions = canonical_actions(profile, shape, profile.measurement_steps)
         trace_hash = action_stream_hash(profile, trace_actions)
         action_records[str(shape)] = {
-            "correctness_sha256": trace_hash,
-            "correctness_steps": profile.correctness_steps,
+            "version": profile.action_stream_version,
+            "seed": profile.run_seed,
+            "validation_sha256": trace_hash,
+            "validation_steps": profile.measurement_steps,
         }
-        if parity_gate is None:
+        reused = parity_gate["checks"].get(str(shape)) if parity_gate is not None else None
+        if reused is None:
             options.report_progress(f"Correctness trace for shape {shape}: left provider")
             left_trace = _trace(
                 partial, left, profile, shape, trace_actions, trace_hash, assets, side="left"
@@ -251,19 +249,32 @@ def run_comparison_resolved(
             right_trace = _trace(
                 partial, right, profile, shape, trace_actions, trace_hash, assets, side="right"
             )
-            correctness[str(shape)] = compare_traces(left_trace, right_trace, profile)
-        else:
             correctness[str(shape)] = {
-                **parity_gate["checks"][str(shape)],
-                "source": "verified-parity-receipt",
-                "receipt_id": parity_gate["receipt_id"],
+                **compare_traces(left_trace, right_trace, profile),
+                "source": "executed pair",
             }
+        else:
+            correctness[str(shape)] = reused
         status = "passed" if correctness[str(shape)]["passed"] else "failed"
         options.report_progress(f"Correctness for shape {shape}: {status}")
     write_json(
         partial / "verification" / "correctness.json",
-        {"schema": "turbobench.correctness/v1", "shapes": correctness},
+        {"schema": "turbobench.correctness/v2", "shapes": correctness},
     )
+    if parity_gate is not None:
+        write_json(
+            partial / "verification" / "parity-gate.json",
+            {
+                **{key: value for key, value in parity_gate.items() if key != "checks"},
+                "shapes": {
+                    shape: {
+                        "source": check["source"],
+                        "receipt_ids": check.get("receipt_ids", []),
+                    }
+                    for shape, check in correctness.items()
+                },
+            },
+        )
 
     options.report_progress("Checking system load")
     load = wait_for_load(
@@ -273,27 +284,33 @@ def run_comparison_resolved(
     )
     options.report_progress(f"System-load gate: {'passed' if load.get('passed') else 'failed'}")
     comparison_shapes: dict[str, Any] = {}
-    pair_count = 2 if options.quick else 7
+    pair_count = profile.light_pairs if options.quick else profile.full_pairs
     for shape in shapes:
-        actions = benchmark_actions(profile, shape, step_count)
+        actions = canonical_actions(profile, shape, step_count)
         stream_hash = action_stream_hash(profile, actions)
         action_records[str(shape)].update(
-            {"benchmark_sha256": stream_hash, "benchmark_steps": step_count}
+            {"measurement_sha256": stream_hash, "measurement_steps": step_count}
         )
         shape_dir = partial / "raw" / f"shape-{shape}"
         shape_dir.mkdir(parents=True, exist_ok=True)
-        options.report_progress(f"Benchmarking shape {shape}: warmup pair")
-        _warmup_pair(
-            shape_dir,
-            left,
-            right,
-            profile,
-            shape,
-            actions,
-            stream_hash,
-            assets,
-            progress=options.progress,
-        )
+        for warmup_index in range(profile.warmup_pairs):
+            options.report_progress(
+                f"Benchmarking shape {shape}: warmup pair "
+                f"{warmup_index + 1}/{profile.warmup_pairs}"
+            )
+            _warmup_pair(
+                shape_dir,
+                left,
+                right,
+                profile,
+                shape,
+                actions,
+                stream_hash,
+                assets,
+                warmup_index=warmup_index,
+                warmup_count=profile.warmup_pairs,
+                progress=options.progress,
+            )
         pairs: list[dict[str, Any]] = []
         for pair_index in range(pair_count):
             order = ("left", "right") if pair_index % 2 == 0 else ("right", "left")
@@ -346,10 +363,15 @@ def run_comparison_resolved(
                 "pairs": pairs,
             },
         )
-        comparison_shapes[str(shape)] = {
+        shape_result = {
             "correctness": correctness[str(shape)],
             "statistics": paired_statistics(pairs, require_official_design=not options.quick),
         }
+        if not options.quick and shape == 1:
+            shape_result["light_statistics"] = paired_statistics(
+                pairs[: profile.light_pairs], require_official_design=False
+            )
+        comparison_shapes[str(shape)] = shape_result
         options.report_progress(
             f"Shape {shape} complete: {comparison_shapes[str(shape)]['statistics']['outcome']}"
         )
@@ -515,14 +537,14 @@ def _selected_shapes(profile: Profile, options: ComparisonOptions) -> tuple[int,
         if not options.shapes or any(shape <= 0 for shape in options.shapes):
             raise ValueError("shapes must contain positive values")
         return options.shapes
-    return (1,) if options.quick else profile.shapes
+    return (1,) if options.quick else profile.measurement_shapes
 
 
 def _selected_steps(profile: Profile, options: ComparisonOptions) -> int:
     value = (
         options.steps
         if options.steps is not None
-        else (100 if options.quick else profile.benchmark_steps)
+        else profile.measurement_steps
     )
     if value <= 0:
         raise ValueError("benchmark steps must be positive")
@@ -646,10 +668,13 @@ def _warmup_pair(
     stream_hash: str,
     assets: dict[str, Any],
     *,
+    warmup_index: int,
+    warmup_count: int,
     progress: Callable[[str], None] | None = None,
 ) -> None:
+    prefix = "warmup" if warmup_count == 1 else f"warmup-{warmup_index + 1:02d}"
     for side, provider in (("left", left), ("right", right)):
-        path = shape_dir / f"warmup-{side}.json"
+        path = shape_dir / f"{prefix}-{side}.json"
         if path.is_file():
             if progress is not None:
                 progress(f"Shape {shape} warmup: reusing {side} evidence")
@@ -664,7 +689,7 @@ def _warmup_pair(
             actions,
             stream_hash,
             assets,
-            label=f"warmup-{side}",
+            label=f"{prefix}-{side}",
         )
         write_json(path, response)
 
@@ -741,8 +766,10 @@ def _validity_gates(
         ),
         Gate(
             "official sample design",
-            shapes == profile.shapes and pair_count == 7,
-            "shapes 1/16/32; one warmup pair; seven alternating pairs; three repetitions",
+            shapes == profile.measurement_shapes
+            and profile.warmup_pairs == 1
+            and pair_count == profile.full_pairs,
+            "configured full shapes, warmups, and alternating pairs",
         ),
         Gate(
             "system load",

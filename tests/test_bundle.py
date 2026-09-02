@@ -10,6 +10,7 @@ from turbobench.engine import ComparisonOptions, run_comparison_resolved
 from turbobench.profiles import get_profile
 from turbobench.resolution import fake_resolved
 from turbobench.runtime import prepare_runtime
+from turbobench.stats import paired_statistics
 from turbobench.util import canonical_json_hash, read_json, write_json
 
 
@@ -17,7 +18,7 @@ def test_fake_provider_end_to_end_bundle_has_separate_statuses(fake_bundle: Path
     verification = verify_bundle(fake_bundle)
     assert verification["passed"]
     result = read_json(fake_bundle / "result.json")
-    assert result["schema"] == "turbobench.result/v1"
+    assert result["schema"] == "turbobench.result/v2"
     assert result["tool"]["distribution"] == "turbobench-cli"
     assert not result["validity"]["passed"]
     assert result["claim"]["status"] == "diagnostic"
@@ -123,9 +124,34 @@ def test_quick_comparison_reports_stage_and_pair_progress(tmp_path: Path) -> Non
         portable_assets={"required": False, "available": True, "assets": []},
     )
 
-    assert messages[0] == "Starting supermario/world1-v1: shapes 1, 100 benchmark steps"
+    assert messages[0] == "Starting supermario/world1-v1: shapes 1, 256 benchmark steps"
     assert "Correctness for shape 1: passed" in messages
     assert "Shape 1 warmup: running left provider" in messages
     assert "Shape 1, pair 2/2 (BA): running left provider" in messages
     assert "Self-verifying result bundle" in messages
     assert messages[-1] == f"Comparison complete: {bundle}"
+
+
+def test_full_comparison_contains_the_light_shape_one_stage(tmp_path: Path) -> None:
+    profile = get_profile("supermario/world1-v1")
+    left = prepare_runtime(fake_resolved("fake-slow", speed=1.0))
+    right = prepare_runtime(fake_resolved("fake-fast", speed=2.0))
+
+    bundle, result = run_comparison_resolved(
+        profile,
+        left,
+        right,
+        tmp_path / "full-bundle",
+        ComparisonOptions(shapes=(1,), force_busy=True),
+        private_assets={},
+        portable_assets={"required": False, "available": True, "assets": []},
+    )
+
+    pairs = read_json(bundle / "raw" / "shape-1" / "pairs.json")["pairs"]
+    shape = result["comparison"]["shapes"]["1"]
+    assert len(pairs) == profile.full_pairs == 7
+    assert shape["light_statistics"] == paired_statistics(
+        pairs[: profile.light_pairs], require_official_design=False
+    )
+    assert shape["correctness"]["source"] == "executed pair"
+    assert verify_bundle(bundle)["passed"]

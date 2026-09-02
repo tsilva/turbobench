@@ -9,7 +9,7 @@ import numpy as np
 from turbobench.correctness import compare_replays, compare_traces
 from turbobench.profiles import (
     action_stream_hash,
-    benchmark_actions,
+    canonical_actions,
     get_profile,
     promo_action_hash,
     promo_actions,
@@ -354,7 +354,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 
 def _trace_request(profile_id: str, shape: int = 3) -> dict:
     profile = get_profile(profile_id)
-    actions = benchmark_actions(profile, shape, profile.correctness_steps)
+    actions = canonical_actions(profile, shape, profile.measurement_steps)
     return {
         "operation": "trace",
         "provider": "fake",

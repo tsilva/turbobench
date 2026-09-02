@@ -362,7 +362,7 @@ sys.path.insert(0, str(wheel))
 import turbobench
 
 assert turbobench.__version__ == sys.argv[2]
-assert turbobench.RESULT_SCHEMA == "turbobench.result/v1"
+assert turbobench.RESULT_SCHEMA == "turbobench.result/v2"
 distribution = next(PathDistribution.discover(path=[str(wheel)]))
 assert distribution.metadata["Name"] == "turbobench-cli"
 assert distribution.version == sys.argv[2]

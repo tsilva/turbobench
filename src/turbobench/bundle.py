@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
-from turbobench.profiles import get_profile, profile_hash, profile_toml
+from turbobench.profiles import (
+    action_stream_hash,
+    canonical_actions,
+    get_profile,
+    profile_hash,
+    profile_toml,
+)
 from turbobench.stats import paired_statistics, reciprocal_statistics
 from turbobench.util import (
     canonical_json_hash,
@@ -168,6 +174,24 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         errors.append("result profile hash is inconsistent")
     if result.get("lock_sha256") != canonical_json_hash(lock):
         errors.append("resolved-lock.json hash is inconsistent")
+    if lock.get("profile") != result.get("profile"):
+        errors.append("resolved lock profile differs from result.json")
+    for side in ("left", "right"):
+        provider = lock.get("providers", {}).get(side, {})
+        expected_summary = {
+            key: provider.get(key)
+            for key in (
+                "provider",
+                "version",
+                "adapter",
+                "artifact_sha256",
+                "source_identity",
+                "runtime_id",
+                "compatibility_lineage",
+            )
+        }
+        if result.get("comparison", {}).get(side) != expected_summary:
+            errors.append(f"comparison {side} summary differs from the resolved lock")
     validity = bool(result.get("validity", {}).get("passed"))
     claim = result.get("claim", {}).get("status")
     if validity and claim not in {"official", "diagnostic"}:
@@ -223,12 +247,56 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         }
         if reversal.get("providers") != expected_providers:
             errors.append("order-reversal providers are not swapped")
+    correctness_path = root / "verification" / "correctness.json"
+    correctness_record = read_json(correctness_path) if correctness_path.is_file() else {}
+    if correctness_record.get("schema") != "turbobench.correctness/v2":
+        errors.append("unsupported or missing correctness record")
+    parity_gate_path = root / "verification" / "parity-gate.json"
+    parity_gate = read_json(parity_gate_path) if parity_gate_path.is_file() else None
+    selected_identities = {
+        (
+            side["provider"],
+            side["version"],
+            side["artifact_sha256"],
+        )
+        for side in (
+            result["comparison"]["left"],
+            result["comparison"]["right"],
+        )
+    }
     for shape, shape_result in result.get("comparison", {}).get("shapes", {}).items():
         raw_path = root / "raw" / f"shape-{shape}" / "pairs.json"
         if not raw_path.is_file():
             errors.append(f"shape {shape} raw pairs are missing")
             continue
         pairs = read_json(raw_path)["pairs"]
+        action_record = result.get("actions", {}).get(shape, {})
+        try:
+            validation_steps = int(action_record.get("validation_steps", 0))
+            measurement_steps = int(action_record.get("measurement_steps", 0))
+            seed = int(action_record.get("seed"))
+            validation_actions = canonical_actions(
+                profile, int(shape), validation_steps, seed=seed
+            )
+            measurement_actions = canonical_actions(
+                profile, int(shape), measurement_steps, seed=seed
+            )
+        except (TypeError, ValueError):
+            errors.append(f"shape {shape} action record is malformed")
+        else:
+            raw_pairs = read_json(raw_path)
+            if (
+                action_record.get("version") != profile.action_stream_version
+                or seed != profile.run_seed
+                or validation_steps != profile.measurement_steps
+                or action_record.get("validation_sha256")
+                != action_stream_hash(profile, validation_actions)
+                or action_record.get("measurement_sha256")
+                != action_stream_hash(profile, measurement_actions)
+                or raw_pairs.get("action_stream_sha256")
+                != action_record.get("measurement_sha256")
+            ):
+                errors.append(f"shape {shape} action record is inconsistent")
         expected = paired_statistics(
             pairs,
             require_official_design=len(pairs) == 7,
@@ -241,6 +309,35 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         ):
             if actual.get(field) != expected.get(field):
                 errors.append(f"shape {shape} statistics mismatch: {field}")
+        light = shape_result.get("light_statistics")
+        if shape == "1" and len(pairs) == 7:
+            expected_light = paired_statistics(
+                pairs[:2], require_official_design=False
+            )
+            if light != expected_light:
+                errors.append("shape 1 light statistics do not match its first two pairs")
+        elif light is not None:
+            errors.append(f"shape {shape} unexpectedly contains light statistics")
+        correctness = shape_result.get("correctness", {})
+        if correctness_record.get("shapes", {}).get(shape) != correctness:
+            errors.append(f"shape {shape} correctness record differs from result.json")
+        source = correctness.get("source")
+        if source == "executed pair":
+            for side in ("left", "right"):
+                if not (root / "raw" / f"shape-{shape}" / f"trace-{side}.json").is_file():
+                    errors.append(f"shape {shape} executed correctness trace is missing for {side}")
+        elif source in {"direct receipt", "transitive receipts"}:
+            _verify_reused_correctness(
+                shape,
+                source,
+                correctness,
+                parity_gate,
+                selected_identities,
+                result["profile"]["id"],
+                errors,
+            )
+        else:
+            errors.append(f"shape {shape} has an invalid correctness source")
         if reversal is not None:
             reversed_shape = reversal.get("shapes", {}).get(shape, {})
             if not reversed_shape.get("raw_evidence_reused"):
@@ -270,6 +367,69 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         except json.JSONDecodeError:
             errors.append(f"JSON artifact is unreadable: {path.relative_to(root)}")
     errors.extend(f"portable output violation: {item}" for item in portability)
+
+
+def _verify_reused_correctness(
+    shape: str,
+    source: str,
+    correctness: dict[str, Any],
+    parity_gate: dict[str, Any] | None,
+    selected_identities: set[tuple[str, str, str]],
+    profile_id: str,
+    errors: list[str],
+) -> None:
+    if (
+        parity_gate is None
+        or parity_gate.get("schema") != "turbobench.parity-gate/v1"
+        or not parity_gate.get("passed")
+        or parity_gate.get("errors")
+        or parity_gate.get("profile") != profile_id
+    ):
+        errors.append(f"shape {shape} has no valid parity reuse decision")
+        return
+    decision = parity_gate.get("shapes", {}).get(shape, {})
+    receipt_ids = correctness.get("receipt_ids", [])
+    if decision != {"source": source, "receipt_ids": receipt_ids}:
+        errors.append(f"shape {shape} parity reuse decision is inconsistent")
+        return
+    evidence = {
+        item.get("receipt_id"): item for item in parity_gate.get("evidence", [])
+    }
+    selected = [evidence.get(receipt_id) for receipt_id in receipt_ids]
+    if any(item is None for item in selected):
+        errors.append(f"shape {shape} parity receipt evidence is missing")
+        return
+    profile = get_profile(profile_id)
+    for item in selected:
+        record = item.get("actions", {}).get(shape, {})
+        try:
+            steps = int(record.get("steps", 0))
+            seed = int(record.get("seed"))
+            actions = canonical_actions(profile, int(shape), steps, seed=seed)
+        except (TypeError, ValueError):
+            errors.append(f"shape {shape} parity action evidence is malformed")
+            return
+        if (
+            steps < profile.measurement_steps
+            or seed != profile.run_seed
+            or record.get("version") != profile.action_stream_version
+            or record.get("sha256") != action_stream_hash(profile, actions)
+        ):
+            errors.append(f"shape {shape} parity action evidence is incompatible")
+            return
+    if source == "direct receipt":
+        if len(selected) != 1 or {
+            tuple(selected[0][role]) for role in ("authority", "candidate")
+        } != selected_identities:
+            errors.append(f"shape {shape} direct receipt does not bind the selected pair")
+        return
+    if len(selected) != 2:
+        errors.append(f"shape {shape} transitive reuse must bind two receipts")
+        return
+    if selected[0]["authority"] != selected[1]["authority"]:
+        errors.append(f"shape {shape} transitive receipts use different authorities")
+    if {tuple(item["candidate"]) for item in selected} != selected_identities:
+        errors.append(f"shape {shape} transitive receipts do not bind the selected pair")
 
 
 def update_result_and_refinalize(bundle: Path, result: dict[str, Any]) -> dict[str, Any]:

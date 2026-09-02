@@ -481,11 +481,18 @@ for file in sorted(dist.files or [], key=str):
         h.update(str(file).encode()); h.update(b'\\0'); h.update(hashlib.sha256(path.read_bytes()).digest())
 print(json.dumps({'version': dist.version, 'distribution_tree_sha256': h.hexdigest(), 'import_file': pathlib.Path(module.__file__).name}))
 """
-    process = _run(
-        [str(python), "-c", code, provider.distribution, provider.import_name],
-        capture=True,
-        cwd=python.parent.parent,
-    )
+    try:
+        process = _run(
+            [str(python), "-c", code, provider.distribution, provider.import_name],
+            capture=True,
+            cwd=python.parent.parent,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(
+            f"installed {provider.distribution}=={provider.version} failed import "
+            f"{provider.import_name!r}: {detail}"
+        ) from exc
     return json.loads(process.stdout)
 
 

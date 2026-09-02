@@ -1,8 +1,8 @@
 """ROM-backed, exact cross-provider parity receipts.
 
 Parity is deliberately separate from performance comparison.
-Compatibility normalization remains available to immutable v1 benchmark
-profiles, but it can never make an exact v2 receipt pass.
+Receipts bind the same immutable workload used by comparisons, but running a
+comparison never prepares the pinned authority implicitly.
 """
 
 from __future__ import annotations
@@ -17,18 +17,13 @@ from turbobench import DISTRIBUTION_NAME, __version__
 from turbobench.assets import discover_assets
 from turbobench.correctness import compare_reset_distributions, compare_traces
 from turbobench.engine import _provider_summary, _reset_distribution, _trace
-from turbobench.model import ParityProfile, Profile, ProviderRef, ResolvedProvider
-from turbobench.parity_profiles import (
-    get_parity_profile,
-    parity_profile_hash,
-    parity_profile_toml,
-)
+from turbobench.model import Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
-    benchmark_actions,
+    canonical_actions,
     get_profile,
-    parity_actions,
     profile_hash,
+    profile_toml,
 )
 from turbobench.providers import load_providers
 from turbobench.resolution import resolve_pair
@@ -43,8 +38,8 @@ from turbobench.util import (
     write_json,
 )
 
-PARITY_RESULT_SCHEMA = "turbobench.parity-result/v1"
-PARITY_MANIFEST_SCHEMA = "turbobench.parity-manifest/v1"
+PARITY_RESULT_SCHEMA = "turbobench.parity-result/v2"
+PARITY_MANIFEST_SCHEMA = "turbobench.parity-manifest/v2"
 
 
 @dataclass(frozen=True)
@@ -71,20 +66,19 @@ def run_parity(
     *,
     authority_ref: ProviderRef | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    parity_profile = get_parity_profile(profile_id)
-    profile = get_profile(parity_profile.base_profile)
-    if not parity_profile.accepts(candidate_ref.provider):
+    profile = get_profile(profile_id)
+    if not profile.accepts(candidate_ref.provider):
         raise ValueError(
             f"{candidate_ref.provider!r} is not a candidate for parity profile {profile_id!r}"
         )
     definitions = load_providers()
     pinned_authority = ProviderRef(
-        parity_profile.authority, "version", parity_profile.authority_version
+        profile.authority, "version", profile.authority_version
     )
     authority = authority_ref or pinned_authority
-    if authority.provider != parity_profile.authority:
+    if authority.provider != profile.authority:
         raise ValueError(
-            f"authority override must use {parity_profile.authority!r} for {profile_id!r}"
+            f"authority override must use {profile.authority!r} for {profile_id!r}"
         )
     options.report_progress(f"Resolving exact providers for {profile.id}")
     resolution = resolve_pair(
@@ -100,7 +94,7 @@ def run_parity(
         resolution.left,
         checkout_path=Path(authority.value) if authority.selector == "checkout" else None,
         artifact_path=Path(authority.value) if authority.selector == "artifact" else None,
-        cache_context=parity_profile_hash(parity_profile),
+        cache_context=profile_hash(profile),
         progress=options.progress,
     )
     options.report_progress(f"Preparing isolated candidate runtime for {resolution.right.provider}")
@@ -108,7 +102,7 @@ def run_parity(
         resolution.right,
         checkout_path=Path(candidate_ref.value) if candidate_ref.selector == "checkout" else None,
         artifact_path=Path(candidate_ref.value) if candidate_ref.selector == "artifact" else None,
-        cache_context=parity_profile_hash(parity_profile),
+        cache_context=profile_hash(profile),
         progress=options.progress,
     )
     if authority_ref is not None:
@@ -116,7 +110,6 @@ def run_parity(
             resolved_authority, "authority override"
         )
     return run_parity_resolved(
-        parity_profile,
         profile,
         resolved_authority,
         candidate,
@@ -127,7 +120,6 @@ def run_parity(
 
 
 def run_parity_resolved(
-    parity_profile: ParityProfile,
     profile: Profile,
     authority: ResolvedProvider,
     candidate: ResolvedProvider,
@@ -138,7 +130,7 @@ def run_parity_resolved(
     private_assets: dict[str, Any] | None = None,
     portable_assets: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    _require_parity_profile(parity_profile, profile)
+    _require_parity_profile(profile)
     if not profile.compatible(authority.provider, candidate.provider) and not (
         authority.adapter == candidate.adapter == "fake"
     ):
@@ -161,17 +153,17 @@ def run_parity_resolved(
         if asset_record.get("required") and not asset_record.get("available"):
             raise FileNotFoundError(str(asset_record.get("detail", "canonical assets unavailable")))
 
-        shapes = _parity_shapes(parity_profile, options)
-        steps = _parity_steps(parity_profile, options)
-        seed = parity_profile.seed if options.seed is None else options.seed
+        shapes = _parity_shapes(profile, options)
+        steps = _parity_steps(profile, options)
+        seed = profile.run_seed if options.seed is None else options.seed
         lock = {
             "schema": "turbobench.parity-lock/v1",
             "python_minor": options.python_minor,
             "harness_dependencies": list(HARNESS_REQUIREMENTS),
             "harness_source_sha256": harness_source_hash(),
             "profile": {
-                "id": parity_profile.id,
-                "sha256": parity_profile_hash(parity_profile),
+                "id": profile.id,
+                "sha256": profile_hash(profile),
             },
             "providers": {
                 "authority": authority.portable(),
@@ -185,24 +177,22 @@ def run_parity_resolved(
             "host": host_record(),
         }
         (partial / "profile.toml").write_text(
-            parity_profile_toml(parity_profile), encoding="utf-8"
+            profile_toml(profile), encoding="utf-8"
         )
         write_json(partial / "resolved-lock.json", lock)
 
         checks: dict[str, Any] = {}
-        benchmark_gate_checks: dict[str, Any] = {}
-        benchmark_gate_actions: dict[str, Any] = {}
         action_records: dict[str, Any] = {}
         require_ram = _requires_ram(profile, authority, candidate)
-        snapshot_prefix, snapshot_suffix = _snapshot_window(parity_profile, steps)
+        snapshot_prefix, snapshot_suffix = _snapshot_window(profile, steps)
         for shape in shapes:
             options.report_progress(
                 f"Exact parity trace for shape {shape}: {steps} seeded transitions"
             )
-            actions = parity_actions(profile, shape, steps, seed=seed)
+            actions = canonical_actions(profile, shape, steps, seed=seed)
             stream_hash = action_stream_hash(profile, actions)
             action_records[str(shape)] = {
-                "kind": "seeded-random-with-directed-prefix",
+                "version": profile.action_stream_version,
                 "seed": seed,
                 "steps": steps,
                 "sha256": stream_hash,
@@ -240,41 +230,9 @@ def run_parity_resolved(
                 f"Shape {shape}: {'passed' if checks[str(shape)]['passed'] else 'failed'}"
             )
 
-            gate_actions = benchmark_actions(profile, shape, profile.correctness_steps)
-            gate_hash = action_stream_hash(profile, gate_actions)
-            benchmark_gate_actions[str(shape)] = {
-                "steps": profile.correctness_steps,
-                "sha256": gate_hash,
-            }
-            gate_authority = _trace(
-                partial,
-                authority,
-                profile,
-                shape,
-                gate_actions,
-                gate_hash,
-                assets,
-                side="benchmark-gate-authority",
-                trace_ram=require_ram,
-            )
-            gate_candidate = _trace(
-                partial,
-                candidate,
-                profile,
-                shape,
-                gate_actions,
-                gate_hash,
-                assets,
-                side="benchmark-gate-candidate",
-                trace_ram=require_ram,
-            )
-            benchmark_gate_checks[str(shape)] = compare_traces(
-                gate_authority, gate_candidate, profile
-            )
-
         distribution_check = None
-        if "reset-distribution" in parity_profile.checks:
-            seed_count = 256
+        if "reset-distribution" in profile.checks:
+            seed_count = profile.reset_samples
             options.report_progress(
                 f"Seeded reset distribution: {seed_count} one-lane reset samples per provider"
             )
@@ -300,7 +258,6 @@ def run_parity_resolved(
 
         passed = (
             all(check["passed"] for check in checks.values())
-            and all(check["passed"] for check in benchmark_gate_checks.values())
             and (distribution_check is None or distribution_check["passed"])
         )
         canonical_workload = (
@@ -314,7 +271,7 @@ def run_parity_resolved(
             and canonical_workload
             and authority.source_kind == "pypi"
             and authority.source_identity
-            == f"pypi:{parity_profile.authority}=={parity_profile.authority_version}"
+            == f"pypi:{profile.authority}=={profile.authority_version}"
             and candidate.source_kind == "artifact"
             and not authority.diagnostic_reasons
             and not candidate.diagnostic_reasons
@@ -324,13 +281,13 @@ def run_parity_resolved(
             "passed": passed,
             "claim": {"status": "official" if official else "diagnostic"},
             "profile": {
-                "id": parity_profile.id,
-                "sha256": parity_profile_hash(parity_profile),
+                "id": profile.id,
+                "sha256": profile_hash(profile),
             },
-            "authority": parity_profile.authority,
-            "authority_present": parity_profile.authority
+            "authority": profile.authority,
+            "authority_present": profile.authority
             in {authority.provider, candidate.provider},
-            "allowed_representation_conversion": parity_profile.allowed_representation_conversion,
+            "allowed_representation_conversion": profile.allowed_representation_conversion,
             "compatibility_normalization_permitted": False,
             "ram_required": require_ram,
             "snapshot_continuation_required": True,
@@ -339,12 +296,6 @@ def run_parity_resolved(
                 "candidate": _provider_summary(candidate),
             },
             "checks": checks,
-            "benchmark_gate": {
-                "profile": profile.id,
-                "profile_sha256": profile_hash(profile),
-                "checks": benchmark_gate_checks,
-                "actions": benchmark_gate_actions,
-            },
             "reset_distribution": distribution_check,
             "actions": action_records,
             "assets": asset_record,
@@ -411,55 +362,46 @@ def verify_parity_receipt(
     try:
         result = read_json(root / "result.json")
         lock = read_json(root / "resolved-lock.json")
-        parity_profile = get_parity_profile(result["profile"]["id"])
+        profile = get_profile(result["profile"]["id"])
         if result.get("schema") != PARITY_RESULT_SCHEMA:
             errors.append("unsupported parity result schema")
-        if result["profile"].get("sha256") != parity_profile_hash(parity_profile):
+        if result["profile"].get("sha256") != profile_hash(profile):
             errors.append("receipt profile hash is inconsistent")
-        if (root / "profile.toml").read_text(encoding="utf-8") != parity_profile_toml(parity_profile):
+        if (root / "profile.toml").read_text(encoding="utf-8") != profile_toml(profile):
             errors.append("profile.toml does not match the built-in profile")
         if result.get("lock_sha256") != canonical_json_hash(lock):
             errors.append("resolved lock hash is inconsistent")
+        if lock.get("profile") != result.get("profile"):
+            errors.append("resolved lock profile differs from result.json")
         checks_passed = bool(result.get("checks")) and all(
             check.get("passed") for check in result.get("checks", {}).values()
         )
-        benchmark_gate = result.get("benchmark_gate", {})
-        gate_checks = benchmark_gate.get("checks", {})
-        gate_actions = benchmark_gate.get("actions", {})
-        gate_passed = bool(gate_checks) and all(
-            check.get("passed") for check in gate_checks.values()
-        )
-        if benchmark_gate.get("profile") != parity_profile.base_profile:
-            errors.append("benchmark gate profile is inconsistent")
-        base_profile = get_profile(parity_profile.base_profile)
-        if benchmark_gate.get("profile_sha256") != profile_hash(base_profile):
-            errors.append("benchmark gate profile hash is inconsistent")
-        if set(gate_checks) != set(gate_actions):
-            errors.append("benchmark gate action and check shapes differ")
-        for shape_text, record in gate_actions.items():
+        action_records = result.get("actions", {})
+        if set(result.get("checks", {})) != set(action_records):
+            errors.append("action and check shapes differ")
+        for shape_text, record in action_records.items():
             try:
                 shape = int(shape_text)
                 steps = int(record.get("steps", 0))
+                seed = int(record.get("seed"))
                 expected_hash = action_stream_hash(
-                    base_profile, benchmark_actions(base_profile, shape, steps)
+                    profile, canonical_actions(profile, shape, steps, seed=seed)
                 )
                 if record.get("sha256") != expected_hash:
-                    errors.append(f"benchmark gate action stream is inconsistent for shape {shape}")
+                    errors.append(f"action stream is inconsistent for shape {shape}")
+                if record.get("version") != profile.action_stream_version:
+                    errors.append(f"action stream version is inconsistent for shape {shape}")
                 for side in ("authority", "candidate"):
                     trace = read_json(
-                        root
-                        / "raw"
-                        / f"shape-{shape}"
-                        / f"trace-benchmark-gate-{side}.json"
+                        root / "raw" / f"shape-{shape}" / f"trace-{side}.json"
                     )
                     if trace.get("action_stream_sha256") != expected_hash:
                         errors.append(
-                            f"benchmark gate trace action stream is inconsistent for {side} shape {shape}"
+                            f"trace action stream is inconsistent for {side} shape {shape}"
                         )
             except (OSError, TypeError, ValueError) as exc:
-                errors.append(f"invalid benchmark gate workload for shape {shape_text}: {exc}")
-        checks_passed = checks_passed and gate_passed
-        if "reset-distribution" in parity_profile.checks:
+                errors.append(f"invalid action workload for shape {shape_text}: {exc}")
+        if "reset-distribution" in profile.checks:
             checks_passed = checks_passed and bool(
                 result.get("reset_distribution", {}).get("passed")
             )
@@ -467,8 +409,8 @@ def verify_parity_receipt(
             errors.append("result pass flag is inconsistent with exact checks")
         if not checks_passed:
             errors.append("one or more exact semantic checks failed")
-        authority = parity_profile.authority
-        authority_version = parity_profile.authority_version
+        authority = profile.authority
+        authority_version = profile.authority_version
         provider_records = tuple(lock.get("providers", {}).values())
         authority_record = lock.get("providers", {}).get("authority", {})
         candidate_record = lock.get("providers", {}).get("candidate", {})
@@ -476,8 +418,26 @@ def verify_parity_receipt(
             errors.append("receipt provider roles are incomplete")
         if authority_record.get("provider") != authority:
             errors.append("receipt authority role does not match the parity profile")
-        if not parity_profile.accepts(str(candidate_record.get("provider", ""))):
+        if not profile.accepts(str(candidate_record.get("provider", ""))):
             errors.append("receipt candidate role is not allowed by the parity profile")
+        for role, provider in (
+            ("authority", authority_record),
+            ("candidate", candidate_record),
+        ):
+            expected_summary = {
+                key: provider.get(key)
+                for key in (
+                    "provider",
+                    "version",
+                    "adapter",
+                    "artifact_sha256",
+                    "source_identity",
+                    "runtime_id",
+                    "compatibility_lineage",
+                )
+            }
+            if result.get("providers", {}).get(role) != expected_summary:
+                errors.append(f"receipt {role} summary differs from the resolved lock")
         if require_provider and not any(
             provider.get("provider") == require_provider for provider in provider_records
         ):
@@ -493,18 +453,21 @@ def verify_parity_receipt(
             errors.append(f"semantic authority version must be {authority_version}")
         if result.get("compatibility_normalization_permitted") is not False:
             errors.append("semantic receipt permits compatibility normalization")
+        if (
+            result.get("allowed_representation_conversion")
+            != profile.allowed_representation_conversion
+        ):
+            errors.append("receipt representation conversion differs from the workload")
         if require_canonical:
             if result.get("claim", {}).get("status") != "official":
                 errors.append("canonical receipt is not an official parity claim")
-            expected_shapes = {str(shape) for shape in parity_profile.shapes}
+            expected_shapes = {str(shape) for shape in profile.parity_shapes}
             if set(result.get("checks", {})) != expected_shapes:
                 errors.append("receipt does not contain every canonical parity shape")
-            if set(gate_checks) != expected_shapes:
-                errors.append("receipt does not contain every canonical benchmark-gate shape")
-            action_records = result.get("actions", {})
             if set(action_records) != expected_shapes or any(
-                record.get("steps") != parity_profile.steps
-                or record.get("seed") != parity_profile.seed
+                record.get("steps") != profile.full_parity_steps
+                or record.get("seed") != profile.run_seed
+                or record.get("version") != profile.action_stream_version
                 for record in action_records.values()
             ):
                 errors.append("receipt does not use the canonical action workload")
@@ -550,84 +513,140 @@ def verify_parity_receipt(
 
 
 def parity_gate_for_benchmark(
-    receipt: Path,
+    receipts: tuple[Path, ...],
     benchmark_profile: Profile,
     providers: tuple[ResolvedProvider, ResolvedProvider],
     shapes: tuple[int, ...],
 ) -> dict[str, Any]:
-    """Validate whether an existing receipt can replace benchmark correctness traces."""
+    """Return valid direct/transitive evidence for each covered benchmark shape."""
 
-    verification = verify_parity_receipt(receipt)
-    errors = list(verification["errors"])
-    if errors:
-        return {"passed": False, "errors": errors}
-    root = receipt.expanduser().resolve()
-    result = read_json(root / "result.json")
-    lock = read_json(root / "resolved-lock.json")
-    parity_profile = get_parity_profile(result["profile"]["id"])
-    parity_base = get_profile(parity_profile.base_profile)
-    comparable_fields = (
-        "logical_environment",
-        "game",
-        "states",
-        "semantic_actions",
-        "action_table",
-        "info_integer",
-        "info_float",
-        "frame_skip",
-        "frame_stack",
-        "crop_top",
-        "crop_bottom",
-        "crop_mode",
-        "resize",
-        "grayscale",
-        "layout",
-        "resize_algorithm",
-        "maxpool_last_two",
-    )
-    if any(
-        getattr(parity_base, field) != getattr(benchmark_profile, field)
-        for field in comparable_fields
-    ):
-        errors.append("parity and benchmark profiles do not have compatible semantics")
-    benchmark_gate = result.get("benchmark_gate", {})
-    gate_checks = benchmark_gate.get("checks", {})
-    gate_actions = benchmark_gate.get("actions", {})
-    selected_shapes = {str(shape) for shape in shapes}
-    if not selected_shapes.issubset(gate_checks):
-        errors.append("parity receipt does not cover every benchmark lane shape")
-    if benchmark_gate.get("profile_sha256") != profile_hash(parity_base):
-        errors.append("parity receipt benchmark-gate profile is inconsistent")
-    for shape in shapes:
-        record = gate_actions.get(str(shape), {})
-        recorded_steps = int(record.get("steps", 0))
-        if recorded_steps < benchmark_profile.correctness_steps:
-            errors.append(f"parity receipt benchmark workload is too short for shape {shape}")
+    errors: list[str] = []
+    entries: list[dict[str, Any]] = []
+    selected = {_artifact_identity(provider) for provider in providers}
+    selected_by_provider = {identity[0]: identity for identity in selected}
+    for receipt in receipts:
+        verification = verify_parity_receipt(receipt)
+        if not verification["passed"]:
+            errors.extend(
+                f"{receipt}: {error}" for error in verification.get("errors", [])
+            )
             continue
-        recorded_actions = benchmark_actions(parity_base, shape, recorded_steps)
-        required_actions = benchmark_actions(
-            benchmark_profile, shape, benchmark_profile.correctness_steps
-        )
-        if (
-            recorded_actions[: benchmark_profile.correctness_steps].shape
-            != required_actions.shape
-            or recorded_actions[: benchmark_profile.correctness_steps].tobytes()
-            != required_actions.tobytes()
+        root = receipt.expanduser().resolve()
+        result = read_json(root / "result.json")
+        lock = read_json(root / "resolved-lock.json")
+        if result.get("profile") != {
+            "id": benchmark_profile.id,
+            "sha256": profile_hash(benchmark_profile),
+        }:
+            errors.append(f"{receipt}: parity receipt uses a different workload profile")
+            continue
+        action_records = result.get("actions", {}).values()
+        if any(
+            record.get("version") != benchmark_profile.action_stream_version
+            or record.get("seed") != benchmark_profile.run_seed
+            for record in action_records
         ):
-            errors.append(f"parity and benchmark action workloads differ for shape {shape}")
+            errors.append(f"{receipt}: parity receipt uses an incompatible action stream")
+            continue
+        authority = _artifact_identity_payload(lock["providers"]["authority"])
+        candidate = _artifact_identity_payload(lock["providers"]["candidate"])
+        if candidate not in selected:
+            errors.append(f"{receipt}: parity receipt binds a different candidate artifact")
+            continue
+        if (
+            benchmark_profile.authority in selected_by_provider
+            and authority != selected_by_provider[benchmark_profile.authority]
+        ):
+            errors.append(f"{receipt}: parity receipt binds a different authority artifact")
+            continue
+        entries.append(
+            {
+                "root": root,
+                "receipt_id": verification["receipt_id"],
+                "result": result,
+                "authority": authority,
+                "candidate": candidate,
+            }
+        )
 
-    receipt_providers = tuple(lock["providers"].values())
-    expected = sorted(_artifact_identity(item) for item in providers)
-    recorded = sorted(_artifact_identity_payload(item) for item in receipt_providers)
-    if expected != recorded:
-        errors.append("parity receipt binds different provider artifacts")
+    authorities = {entry["authority"] for entry in entries}
+    if len(authorities) > 1:
+        errors.append("supplied parity receipts bind different authority artifacts")
+
+    direct_entries = [
+        entry for entry in entries if {entry["authority"], entry["candidate"]} == selected
+    ]
+    transitive_entries: dict[tuple[str, str, str], dict[str, Any]] = {
+        entry["candidate"]: entry for entry in entries
+    }
+    checks: dict[str, Any] = {}
+    for shape in shapes:
+        direct = next(
+            (entry for entry in direct_entries if _receipt_covers(entry, benchmark_profile, shape)),
+            None,
+        )
+        if direct is not None:
+            checks[str(shape)] = {
+                "passed": True,
+                "source": "direct receipt",
+                "receipt_ids": [direct["receipt_id"]],
+            }
+            continue
+        if benchmark_profile.authority not in selected_by_provider:
+            left = transitive_entries.get(_artifact_identity(providers[0]))
+            right = transitive_entries.get(_artifact_identity(providers[1]))
+            if (
+                left is not None
+                and right is not None
+                and left["authority"] == right["authority"]
+                and _receipt_covers(left, benchmark_profile, shape)
+                and _receipt_covers(right, benchmark_profile, shape)
+            ):
+                checks[str(shape)] = {
+                    "passed": True,
+                    "source": "transitive receipts",
+                    "receipt_ids": [left["receipt_id"], right["receipt_id"]],
+                }
     return {
+        "schema": "turbobench.parity-gate/v1",
         "passed": not errors,
         "errors": errors,
-        "receipt_id": verification.get("receipt_id"),
-        "profile": parity_profile.id,
-        "checks": gate_checks,
+        "receipt_ids": [entry["receipt_id"] for entry in entries],
+        "profile": benchmark_profile.id,
+        "checks": checks,
+        "evidence": [
+            {
+                "receipt_id": entry["receipt_id"],
+                "authority": list(entry["authority"]),
+                "candidate": list(entry["candidate"]),
+                "actions": entry["result"].get("actions", {}),
+            }
+            for entry in entries
+        ],
     }
+
+
+def _receipt_covers(entry: dict[str, Any], profile: Profile, shape: int) -> bool:
+    record = entry["result"].get("actions", {}).get(str(shape), {})
+    check = entry["result"].get("checks", {}).get(str(shape), {})
+    try:
+        steps = int(record.get("steps", 0))
+        seed = int(record.get("seed"))
+    except (TypeError, ValueError):
+        return False
+    if (
+        not check.get("passed")
+        or steps < profile.measurement_steps
+        or seed != profile.run_seed
+        or record.get("version") != profile.action_stream_version
+    ):
+        return False
+    recorded = canonical_actions(profile, shape, steps, seed=seed)
+    required = canonical_actions(profile, shape, profile.measurement_steps)
+    return (
+        record.get("sha256") == action_stream_hash(profile, recorded)
+        and recorded[: profile.measurement_steps].tobytes() == required.tobytes()
+    )
 
 
 def _artifact_identity(provider: ResolvedProvider) -> tuple[str, str, str]:
@@ -662,21 +681,21 @@ def _finalize_parity_manifest(receipt: Path) -> dict[str, Any]:
     return manifest
 
 
-def _require_parity_profile(parity_profile: ParityProfile, profile: Profile) -> None:
-    if parity_profile.base_profile != profile.id or not profile.native_transition_exact:
+def _require_parity_profile(profile: Profile) -> None:
+    if not profile.native_transition_exact:
         raise ValueError(f"profile {profile.id!r} is not an exact parity profile")
 
 
-def _parity_shapes(profile: ParityProfile, options: ParityOptions) -> tuple[int, ...]:
-    default = profile.quick_shapes if options.quick else profile.shapes
+def _parity_shapes(profile: Profile, options: ParityOptions) -> tuple[int, ...]:
+    default = profile.quick_parity_shapes if options.quick else profile.parity_shapes
     shapes = default if options.shapes is None else options.shapes
     if not shapes or any(shape <= 0 for shape in shapes):
         raise ValueError("parity shapes must contain positive values")
     return shapes
 
 
-def _parity_steps(profile: ParityProfile, options: ParityOptions) -> int:
-    default = profile.quick_steps if options.quick else profile.steps
+def _parity_steps(profile: Profile, options: ParityOptions) -> int:
+    default = profile.quick_parity_steps if options.quick else profile.full_parity_steps
     steps = default if options.steps is None else options.steps
     if steps <= 0:
         raise ValueError("parity steps must be positive")
@@ -696,7 +715,7 @@ def _requires_ram(
     return False
 
 
-def _snapshot_window(profile: ParityProfile, steps: int) -> tuple[int, int]:
+def _snapshot_window(profile: Profile, steps: int) -> tuple[int, int]:
     prefix = min(profile.snapshot_prefix_steps, max(1, steps // 2))
     suffix = min(profile.snapshot_suffix_steps, steps - prefix)
     if suffix <= 0:
