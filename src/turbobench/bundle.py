@@ -164,10 +164,11 @@ def _verify_consistency(
         errors.append(f"result or lock is unreadable: {exc}")
         return
     result_schema = result.get("schema")
-    if result_schema not in {RESULT_SCHEMA, "turbobench.result/v2"}:
+    if result_schema != RESULT_SCHEMA:
         errors.append("unsupported result schema")
         return
-    if result_schema == "turbobench.result/v2":
+    phase_isolated = result.get("execution_protocol") == EXECUTION_PROTOCOL
+    if not phase_isolated:
         warnings.append(
             "legacy 1.0.3-2.0.6 bundle integrity is verifiable, but performance evidence "
             "may be lifecycle-contaminated and should be rerun before supporting claims"
@@ -213,7 +214,7 @@ def _verify_consistency(
         errors.append("Turbo API contract reports are missing")
     else:
         recorded = read_json(contract_path)
-        if result_schema == RESULT_SCHEMA:
+        if phase_isolated:
             _verify_phase_isolated_contracts(root, result, lock, recorded, errors)
         else:
             if recorded.get("schema") != "turbobench.turbo-contract-reports/v1":
@@ -240,7 +241,7 @@ def _verify_consistency(
         expected_gate = all(
             report.get("promotable")
             for value in contract.values()
-            for report in (value.values() if result_schema == RESULT_SCHEMA else (value,))
+            for report in (value.values() if phase_isolated else (value,))
         )
         if turbo_gate is None or bool(turbo_gate.get("passed")) != expected_gate:
             errors.append("Turbo API validity gate is missing or inconsistent")

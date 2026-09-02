@@ -18,7 +18,7 @@ def test_fake_provider_end_to_end_bundle_has_separate_statuses(fake_bundle: Path
     verification = verify_bundle(fake_bundle)
     assert verification["passed"]
     result = read_json(fake_bundle / "result.json")
-    assert result["schema"] == "turbobench.result/v3"
+    assert result["schema"] == "turbobench.result/v2"
     assert result["tool"]["distribution"] == "turbobench-cli"
     assert not result["validity"]["passed"]
     assert result["claim"]["status"] == "diagnostic"
