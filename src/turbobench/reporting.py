@@ -20,6 +20,7 @@ def render_report(result: dict[str, Any]) -> str:
         f"- Claim status: `{result['claim']['status']}`",
         f"- Shape-1 outcome: `{comparison['outcome']}`",
         f"- Promo eligible: `{str(result['promo']['eligible']).lower()}`",
+        f"- Execution protocol: `{result.get('execution_protocol', 'legacy-contaminable')}`",
         f"- Left: `{left['provider']}=={left['version']}`",
         f"- Right: `{right['provider']}=={right['version']}`",
         "",
@@ -49,6 +50,10 @@ def render_report(result: dict[str, Any]) -> str:
             "Each official shape uses one unmeasured warmup pair followed by seven alternating AB/BA measured pairs. "
             "Every invocation contains three repetitions; invocation medians form paired ratios and a deterministic "
             "20,000-resample bootstrap 95% confidence interval.",
+            "",
+            "Contract validation, correctness traces, warmups, timed measurements, and promotional replay use "
+            "phase-isolated provider processes and fresh environment instances. Each workload evidence record "
+            "references the successful attestation for its exact execution configuration.",
             "",
             "Timed SPS includes preprocessing, IPC, infos, terminal detection, and selective resets. It excludes "
             "construction, initial reset, action generation, warmup, correctness replay, rendering, and encoding.",

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,7 @@ from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
 from turbobench.assets import discover_assets
 from turbobench.bundle import finalize_manifest, verify_bundle
 from turbobench.correctness import compare_replays, compare_traces
+from turbobench.lifecycle import EXECUTION_PROTOCOL, execution_spec, require_attestation
 from turbobench.model import Gate, Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
@@ -171,7 +175,12 @@ def run_comparison_resolved(
         if journal.get("run_key") != run_key:
             raise RuntimeError(f"existing partial bundle belongs to another run: {partial}")
     else:
-        journal = {"schema": "turbobench.journal/v1", "run_key": run_key, "completed": []}
+        journal = {
+            "schema": "turbobench.journal/v2",
+            "execution_protocol": EXECUTION_PROTOCOL,
+            "run_key": run_key,
+            "completed": [],
+        }
         write_json(journal_path, journal)
     (partial / "profile.toml").write_text(profile_toml(profile), encoding="utf-8")
     write_json(partial / "resolved-lock.json", lock)
@@ -182,37 +191,42 @@ def run_comparison_resolved(
         f"Starting {profile.id}: shapes {', '.join(map(str, shapes))}, {step_count} benchmark steps"
     )
 
-    contract_reports: dict[str, Any] = {}
+    contract_attestations: dict[str, dict[str, Any]] = {"left": {}, "right": {}}
+    contract_reports: dict[str, dict[str, Any]] = {"left": {}, "right": {}}
     for side, provider in (("left", left), ("right", right)):
-        report_path = partial / "verification" / f"turbo-contract-{side}.json"
-        if report_path.is_file():
-            report = read_json(report_path)
-        else:
-            options.report_progress(f"Turbo API preflight: {side} provider")
-            response = invoke_runner(
-                provider,
-                {
-                    **_base_request(provider, profile, 1, assets),
-                    "operation": "contract",
-                },
-                log_path=partial / "verification" / f"turbo-contract-{side}.log",
+        for shape in shapes:
+            options.report_progress(
+                f"Phase-isolated contract probe: {side} provider, shape {shape}"
             )
-            report = response.get("turbo_contract_report", {})
-        contract_reports[side] = report
-        write_json(report_path, report)
+            attestation = _contract_attestation(
+                partial,
+                provider,
+                profile,
+                shape,
+                assets,
+                asset_record,
+                side=side,
+            )
+            contract_attestations[side][str(shape)] = attestation
+            contract_reports[side][str(shape)] = attestation["contract_report"]
     write_json(
         partial / "verification" / "turbo-contract.json",
-        {"schema": "turbobench.turbo-contract-reports/v1", "reports": contract_reports},
+        {
+            "schema": "turbobench.contract-attestations/v1",
+            "protocol": EXECUTION_PROTOCOL,
+            "attestations": contract_attestations,
+        },
     )
     failed_v2 = [
-        side
-        for side, report in contract_reports.items()
-        if report.get("api_version") == 2 and not report.get("passed")
+        f"{side}/shape-{shape}"
+        for side, reports in contract_reports.items()
+        for shape, report in reports.items()
+        if not report.get("passed")
     ]
     if failed_v2:
         raise RuntimeError(
-            f"{', '.join(failed_v2)} provider(s) declare Turbo API v2 but failed validation; "
-            "both contract reports were recorded and no workload was executed"
+            f"{', '.join(failed_v2)} provider configuration(s) failed validation; "
+            "completed attestations were recorded and no dependent workload was executed"
         )
 
     parity_gate = None
@@ -243,11 +257,29 @@ def run_comparison_resolved(
         if reused is None:
             options.report_progress(f"Correctness trace for shape {shape}: left provider")
             left_trace = _trace(
-                partial, left, profile, shape, trace_actions, trace_hash, assets, side="left"
+                partial,
+                left,
+                profile,
+                shape,
+                trace_actions,
+                trace_hash,
+                assets,
+                side="left",
+                execution_spec_record=_execution_spec_for(left, profile, shape, asset_record),
+                contract_attestation=contract_attestations["left"][str(shape)],
             )
             options.report_progress(f"Correctness trace for shape {shape}: right provider")
             right_trace = _trace(
-                partial, right, profile, shape, trace_actions, trace_hash, assets, side="right"
+                partial,
+                right,
+                profile,
+                shape,
+                trace_actions,
+                trace_hash,
+                assets,
+                side="right",
+                execution_spec_record=_execution_spec_for(right, profile, shape, asset_record),
+                contract_attestation=contract_attestations["right"][str(shape)],
             )
             correctness[str(shape)] = {
                 **compare_traces(left_trace, right_trace, profile),
@@ -310,6 +342,11 @@ def run_comparison_resolved(
                 warmup_index=warmup_index,
                 warmup_count=profile.warmup_pairs,
                 progress=options.progress,
+                portable_assets=asset_record,
+                contract_attestations={
+                    "left": contract_attestations["left"][str(shape)],
+                    "right": contract_attestations["right"][str(shape)],
+                },
             )
         pairs: list[dict[str, Any]] = []
         for pair_index in range(pair_count):
@@ -325,6 +362,11 @@ def run_comparison_resolved(
                         f"({order_label}): reusing {side} evidence"
                     )
                     response = read_json(response_path)
+                    _require_evidence_binding(
+                        response,
+                        _execution_spec_for(provider, profile, shape, asset_record),
+                        contract_attestations[side][str(shape)],
+                    )
                 else:
                     options.report_progress(
                         f"Shape {shape}, pair {pair_index + 1}/{pair_count} "
@@ -339,6 +381,8 @@ def run_comparison_resolved(
                         stream_hash,
                         assets,
                         label=f"pair-{pair_index + 1:02d}-{side}",
+                        portable_assets=asset_record,
+                        contract_attestation=contract_attestations[side][str(shape)],
                     )
                     write_json(response_path, response)
                 responses[side] = response
@@ -407,6 +451,8 @@ def run_comparison_resolved(
         asset_record,
         options,
         contract_reports,
+        contract_attestations,
+        _evidence_attestations_match(partial, shapes, contract_attestations),
     )
     validity_passed = all(gate.passed for gate in gates)
     diagnostic_reasons = [gate.detail for gate in gates if not gate.passed]
@@ -425,6 +471,8 @@ def run_comparison_resolved(
             "gates": [gate.__dict__ for gate in gates],
         },
         "turbo_contract": contract_reports,
+        "contract_attestations": contract_attestations,
+        "execution_protocol": EXECUTION_PROTOCOL,
         "claim": {
             "status": claim_status,
             "diagnostic_reasons": sorted(set(diagnostic_reasons)),
@@ -458,13 +506,45 @@ def run_comparison_resolved(
         replay_temp.mkdir(exist_ok=True)
         replay_actions = promo_actions(profile)
         replay_hash = promo_action_hash(profile, replay_actions)
+        promo_attestations = {
+            side: _contract_attestation(
+                partial,
+                provider,
+                profile,
+                1,
+                assets,
+                asset_record,
+                side=f"promo-{side}",
+                frame_skip=1,
+            )
+            for side, provider in (("left", left), ("right", right))
+        }
+        result["promo"]["contract_attestations"] = promo_attestations
         options.report_progress("Replaying promotional trajectory: left provider")
         left_replay, left_frames = _promo_replay(
-            partial, replay_temp, left, profile, replay_actions, replay_hash, assets, "left"
+            partial,
+            replay_temp,
+            left,
+            profile,
+            replay_actions,
+            replay_hash,
+            assets,
+            asset_record,
+            promo_attestations["left"],
+            "left",
         )
         options.report_progress("Replaying promotional trajectory: right provider")
         right_replay, right_frames = _promo_replay(
-            partial, replay_temp, right, profile, replay_actions, replay_hash, assets, "right"
+            partial,
+            replay_temp,
+            right,
+            profile,
+            replay_actions,
+            replay_hash,
+            assets,
+            asset_record,
+            promo_attestations["right"],
+            "right",
         )
         replay_gate = compare_replays(left_replay, right_replay, profile)
         write_json(
@@ -520,7 +600,8 @@ def _resolved_lock(
     options: ComparisonOptions,
 ) -> dict[str, Any]:
     return {
-        "schema": "turbobench.resolved-lock/v1",
+        "schema": "turbobench.resolved-lock/v2",
+        "execution_protocol": EXECUTION_PROTOCOL,
         "python_minor": options.python_minor,
         "harness_dependencies": list(HARNESS_REQUIREMENTS),
         "harness_source_sha256": harness_source_hash(),
@@ -575,6 +656,154 @@ def _base_request(
     }
 
 
+def _execution_spec_for(
+    provider: ResolvedProvider,
+    profile: Profile,
+    shape: int,
+    portable_assets: dict[str, Any],
+    *,
+    frame_skip: int | None = None,
+    noop_reset_max: int = 0,
+) -> dict[str, Any]:
+    host = host_record()
+    return execution_spec(
+        provider=provider.portable(),
+        harness={
+            "distribution": DISTRIBUTION_NAME,
+            "version": __version__,
+            "source_sha256": harness_source_hash(),
+            "protocol": EXECUTION_PROTOCOL,
+        },
+        python_minor=provider.python_minor,
+        python_identity=_runtime_python_identity(
+            provider.runtime_python, provider.python_minor
+        ),
+        platform={
+            "os": host["os"],
+            "os_release": host["os_release"],
+            "architecture": host["architecture"],
+        },
+        profile={"id": profile.id, "sha256": profile_hash(profile)},
+        constructor={
+            "adapter": provider.adapter,
+            "import_name": provider.import_name,
+            "environment_class": provider.environment_class,
+            "game": profile.game,
+            "state": None,
+            "scenario": None,
+            "info": None,
+            "record": False,
+            "players": 1,
+            "inttype": "stable",
+            "obs_type": "image",
+            "shape": shape,
+            "num_threads": shape,
+            "transport": "numpy",
+            "obs_copy": "copy",
+            "frame_skip": profile.frame_skip if frame_skip is None else frame_skip,
+            "frame_stack": profile.frame_stack,
+            "crop": [profile.crop_top, profile.crop_bottom, 0, 0],
+            "crop_mode": profile.crop_mode,
+            "grayscale": profile.grayscale,
+            "resize": list(profile.resize),
+            "resize_algorithm": profile.resize_algorithm,
+            "layout": profile.layout,
+            "maxpool_last_two": profile.maxpool_last_two,
+            "noop_reset_max": noop_reset_max,
+            "sticky_action_prob": 0.0,
+            "use_fire_reset": False,
+            "reward_clip": False,
+            "info_filter": {
+                "mode": "all",
+                "keys": list(profile.info_integer + profile.info_float),
+            },
+            "info_frame_stack_keys": None,
+            "states": list(profile.states),
+            "action_table": [list(value) for value in profile.action_table.values()],
+            "render_mode": "rgb_array",
+        },
+        assets=portable_assets,
+    )
+
+
+@cache
+def _runtime_python_identity(
+    runtime_python: str | None, python_minor: str
+) -> dict[str, str]:
+    if not runtime_python:
+        return {"implementation": "unknown", "version": python_minor, "minor": python_minor}
+    process = subprocess.run(
+        [
+            runtime_python,
+            "-I",
+            "-c",
+            (
+                "import json, platform; "
+                "print(json.dumps({'implementation': platform.python_implementation(), "
+                "'version': platform.python_version()}))"
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    identity = json.loads(process.stdout)
+    return {
+        "implementation": str(identity["implementation"]),
+        "version": str(identity["version"]),
+        "minor": python_minor,
+    }
+
+
+def _contract_attestation(
+    bundle: Path,
+    provider: ResolvedProvider,
+    profile: Profile,
+    shape: int,
+    assets: dict[str, Any],
+    portable_assets: dict[str, Any],
+    *,
+    side: str,
+    frame_skip: int | None = None,
+    noop_reset_max: int = 0,
+) -> dict[str, Any]:
+    spec = _execution_spec_for(
+        provider,
+        profile,
+        shape,
+        portable_assets,
+        frame_skip=frame_skip,
+        noop_reset_max=noop_reset_max,
+    )
+    spec_hash = str(spec["execution_spec_sha256"])
+    directory = bundle / "verification" / "attestations"
+    path = directory / f"{side}-{spec_hash}.json"
+    if path.is_file():
+        response = read_json(path)
+    else:
+        request = {
+            **_base_request(provider, profile, shape, assets),
+            "operation": "contract",
+            "execution_spec": spec,
+        }
+        if frame_skip is not None:
+            request["frame_skip"] = frame_skip
+        if noop_reset_max:
+            request["noop_reset_max"] = noop_reset_max
+        response = invoke_runner(
+            provider,
+            request,
+            log_path=directory / f"{side}-{spec_hash}.log",
+        )
+        write_json(path, response)
+    attestation = response.get("contract_attestation")
+    if isinstance(attestation, dict) and attestation.get("passed"):
+        require_attestation(spec, attestation)
+    elif not isinstance(attestation, dict):
+        raise RuntimeError(f"{side} contract probe produced no attestation")
+    return attestation
+
+
 def _trace(
     bundle: Path,
     provider: ResolvedProvider,
@@ -585,13 +814,17 @@ def _trace(
     assets: dict[str, Any],
     *,
     side: str,
+    execution_spec_record: dict[str, Any],
+    contract_attestation: dict[str, Any],
     trace_ram: bool = False,
     snapshot_prefix_steps: int = 0,
     snapshot_suffix_steps: int = 0,
 ) -> dict[str, Any]:
     path = bundle / "raw" / f"shape-{shape}" / f"trace-{side}.json"
     if path.is_file():
-        return read_json(path)
+        response = read_json(path)
+        _require_evidence_binding(response, execution_spec_record, contract_attestation)
+        return response
     request = {
         **_base_request(provider, profile, shape, assets),
         "operation": "trace",
@@ -600,6 +833,8 @@ def _trace(
         "trace_ram": trace_ram,
         "snapshot_prefix_steps": snapshot_prefix_steps,
         "snapshot_suffix_steps": snapshot_suffix_steps,
+        "execution_spec": execution_spec_record,
+        "contract_attestation": contract_attestation,
     }
     response = invoke_runner(
         provider,
@@ -607,6 +842,7 @@ def _trace(
         log_path=bundle / "raw" / f"shape-{shape}" / f"trace-{side}.log",
     )
     write_json(path, response)
+    _require_evidence_binding(response, execution_spec_record, contract_attestation)
     return response
 
 
@@ -618,15 +854,21 @@ def _reset_distribution(
     *,
     side: str,
     seed_count: int,
+    execution_spec_record: dict[str, Any],
+    contract_attestation: dict[str, Any],
 ) -> dict[str, Any]:
     path = bundle / "raw" / "reset-distribution" / f"{side}.json"
     if path.is_file():
-        return read_json(path)
+        response = read_json(path)
+        _require_evidence_binding(response, execution_spec_record, contract_attestation)
+        return response
     request = {
         **_base_request(provider, profile, 1, assets),
         "operation": "reset-distribution",
         "noop_reset_max": 30,
         "seeds": list(range(seed_count)),
+        "execution_spec": execution_spec_record,
+        "contract_attestation": contract_attestation,
     }
     response = invoke_runner(
         provider,
@@ -634,6 +876,7 @@ def _reset_distribution(
         log_path=bundle / "raw" / "reset-distribution" / f"{side}.log",
     )
     write_json(path, response)
+    _require_evidence_binding(response, execution_spec_record, contract_attestation)
     return response
 
 
@@ -647,6 +890,8 @@ def _benchmark_invocation(
     assets: dict[str, Any],
     *,
     label: str,
+    portable_assets: dict[str, Any],
+    contract_attestation: dict[str, Any],
 ) -> dict[str, Any]:
     request = {
         **_base_request(provider, profile, shape, assets),
@@ -654,8 +899,14 @@ def _benchmark_invocation(
         "actions": actions.tolist(),
         "action_stream_sha256": stream_hash,
         "warmup_steps": min(500, len(actions)),
+        "execution_spec": _execution_spec_for(provider, profile, shape, portable_assets),
+        "contract_attestation": contract_attestation,
     }
-    return invoke_runner(provider, request, log_path=shape_dir / f"{label}.log")
+    response = invoke_runner(provider, request, log_path=shape_dir / f"{label}.log")
+    _require_evidence_binding(
+        response, request["execution_spec"], contract_attestation
+    )
+    return response
 
 
 def _warmup_pair(
@@ -670,6 +921,8 @@ def _warmup_pair(
     *,
     warmup_index: int,
     warmup_count: int,
+    portable_assets: dict[str, Any],
+    contract_attestations: dict[str, dict[str, Any]],
     progress: Callable[[str], None] | None = None,
 ) -> None:
     prefix = "warmup" if warmup_count == 1 else f"warmup-{warmup_index + 1:02d}"
@@ -678,6 +931,12 @@ def _warmup_pair(
         if path.is_file():
             if progress is not None:
                 progress(f"Shape {shape} warmup: reusing {side} evidence")
+            response = read_json(path)
+            _require_evidence_binding(
+                response,
+                _execution_spec_for(provider, profile, shape, portable_assets),
+                contract_attestations[side],
+            )
             continue
         if progress is not None:
             progress(f"Shape {shape} warmup: running {side} provider")
@@ -690,8 +949,26 @@ def _warmup_pair(
             stream_hash,
             assets,
             label=f"{prefix}-{side}",
+            portable_assets=portable_assets,
+            contract_attestation=contract_attestations[side],
         )
         write_json(path, response)
+
+
+def _require_evidence_binding(
+    evidence: dict[str, Any],
+    spec: dict[str, Any],
+    attestation: dict[str, Any],
+) -> None:
+    expected = require_attestation(spec, attestation)
+    lifecycle = evidence.get("lifecycle", {})
+    if (
+        lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+        or lifecycle.get("contract_attestation_sha256") != expected
+        or lifecycle.get("dynamic_contract_validation_calls") != 0
+        or lifecycle.get("environment_closed") is not True
+    ):
+        raise RuntimeError("runner evidence does not match its contract attestation")
 
 
 def _validity_gates(
@@ -704,7 +981,9 @@ def _validity_gates(
     load: dict[str, Any],
     assets: dict[str, Any],
     options: ComparisonOptions,
-    contract_reports: dict[str, Any],
+    contract_reports: dict[str, dict[str, Any]],
+    contract_attestations: dict[str, dict[str, Any]],
+    evidence_attestations_match: bool,
 ) -> list[Gate]:
     harness_left = {
         line
@@ -758,11 +1037,28 @@ def _validity_gates(
         ),
         Gate(
             "Turbo API validity",
-            all(report.get("promotable") for report in contract_reports.values()),
-            ", ".join(
-                f"{side}=api{report.get('api_version')}:{'pass' if report.get('promotable') else 'diagnostic'}"
-                for side, report in contract_reports.items()
+            all(
+                report.get("promotable")
+                for reports in contract_reports.values()
+                for report in reports.values()
             ),
+            ", ".join(
+                f"{side}/shape-{shape}=api{report.get('api_version')}:"
+                f"{'pass' if report.get('promotable') else 'diagnostic'}"
+                for side, reports in contract_reports.items()
+                for shape, report in reports.items()
+            ),
+        ),
+        Gate(
+            "phase-isolated execution protocol",
+            evidence_attestations_match
+            and all(
+                attestation.get("protocol") == EXECUTION_PROTOCOL
+                and attestation.get("passed")
+                for attestations in contract_attestations.values()
+                for attestation in attestations.values()
+            ),
+            "every workload process references its exact successful contract attestation",
         ),
         Gate(
             "official sample design",
@@ -794,6 +1090,32 @@ def _validity_gates(
     ]
 
 
+def _evidence_attestations_match(
+    bundle: Path,
+    shapes: tuple[int, ...],
+    attestations: dict[str, dict[str, Any]],
+) -> bool:
+    for shape in shapes:
+        shape_dir = bundle / "raw" / f"shape-{shape}"
+        for path in shape_dir.glob("*.json"):
+            if path.name == "pairs.json":
+                continue
+            payload = read_json(path)
+            side = "left" if "left" in path.stem else "right" if "right" in path.stem else None
+            if side is None:
+                continue
+            expected = attestations[side][str(shape)].get("attestation_sha256")
+            lifecycle = payload.get("lifecycle", {})
+            if (
+                lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+                or lifecycle.get("contract_attestation_sha256") != expected
+                or lifecycle.get("dynamic_contract_validation_calls") != 0
+                or lifecycle.get("environment_closed") is not True
+            ):
+                return False
+    return True
+
+
 def _provider_summary(provider: ResolvedProvider) -> dict[str, Any]:
     return {
         "provider": provider.provider,
@@ -814,6 +1136,8 @@ def _promo_replay(
     actions: tuple[tuple[str, ...], ...],
     stream_hash: str,
     assets: dict[str, Any],
+    portable_assets: dict[str, Any],
+    contract_attestation: dict[str, Any],
     side: str,
 ) -> tuple[dict[str, Any], Path]:
     frames = temporary / f"{side}.rgb"
@@ -824,6 +1148,10 @@ def _promo_replay(
         "promo_actions": actions,
         "promo_action_sha256": stream_hash,
         "output_frames": str(frames),
+        "execution_spec": _execution_spec_for(
+            provider, profile, 1, portable_assets, frame_skip=1
+        ),
+        "contract_attestation": contract_attestation,
     }
     response = invoke_runner(
         provider,
@@ -853,7 +1181,7 @@ def generate_promo_for_bundle(
     profile = get_profile(result["profile"]["id"])
     left = _rehydrate_provider(lock["providers"]["left"])
     right = _rehydrate_provider(lock["providers"]["right"])
-    private_assets, _portable_assets = discover_assets(profile)
+    private_assets, portable_assets = discover_assets(profile)
     staging = source.with_name(source.name + ".promo.partial")
     backup = source.with_name(source.name + ".pre-promo-backup")
     if staging.exists() or backup.exists():
@@ -864,13 +1192,45 @@ def generate_promo_for_bundle(
             temporary = Path(raw_temp)
             actions = promo_actions(profile)
             stream_hash = promo_action_hash(profile, actions)
+            promo_attestations = {
+                side: _contract_attestation(
+                    staging,
+                    provider,
+                    profile,
+                    1,
+                    private_assets,
+                    portable_assets,
+                    side=f"promo-{side}",
+                    frame_skip=1,
+                )
+                for side, provider in (("left", left), ("right", right))
+            }
+            result["promo"]["contract_attestations"] = promo_attestations
             report("Replaying promotional trajectory: left provider")
             left_replay, left_frames = _promo_replay(
-                staging, temporary, left, profile, actions, stream_hash, private_assets, "left"
+                staging,
+                temporary,
+                left,
+                profile,
+                actions,
+                stream_hash,
+                private_assets,
+                portable_assets,
+                promo_attestations["left"],
+                "left",
             )
             report("Replaying promotional trajectory: right provider")
             right_replay, right_frames = _promo_replay(
-                staging, temporary, right, profile, actions, stream_hash, private_assets, "right"
+                staging,
+                temporary,
+                right,
+                profile,
+                actions,
+                stream_hash,
+                private_assets,
+                portable_assets,
+                promo_attestations["right"],
+                "right",
             )
             replay_gate = compare_replays(left_replay, right_replay, profile)
             result["promo"]["requested"] = True

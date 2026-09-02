@@ -17,6 +17,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache, partial
@@ -26,6 +27,12 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from turbobench.lifecycle import (
+    attest,
+    evidence_binding,
+    require_attestation,
+    require_request_matches_spec,
+)
 from turbobench.model import Profile
 from turbobench.profiles import (
     BREAKOUT_RGB_TRANSPORT_CONVERSION,
@@ -347,6 +354,7 @@ class Adapter:
         *,
         native_discrete: bool,
         contract_report: dict[str, Any] | None = None,
+        attestation_sha256: str | None = None,
         overlay: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
         self.env = env
@@ -354,6 +362,9 @@ class Adapter:
         self.provider = provider
         self.native_discrete = native_discrete
         self.contract_report = contract_report or legacy_report(provider, None)
+        self.attestation_sha256 = attestation_sha256
+        self.instance_id = uuid.uuid4().hex
+        self.closed = False
         self.overlay = overlay
         self.num_envs = int(env.num_envs)
         self._terminal_mask = np.zeros(self.num_envs, dtype=np.bool_)
@@ -604,6 +615,7 @@ class Adapter:
         try:
             self.env.close()
         finally:
+            self.closed = True
             if self.overlay is not None:
                 self.overlay.cleanup()
 
@@ -615,6 +627,10 @@ class _InMemorySpace:
 
     def sample(self) -> np.ndarray:
         return np.zeros(self.shape, dtype=self.dtype)
+
+
+_FAKE_PROCESS_POISONED = False
+_WORKLOAD_OPERATIONS = frozenset({"trace", "benchmark", "reset-distribution", "promo"})
 
 
 class _InMemoryFakeV2Env:
@@ -663,6 +679,7 @@ class _InMemoryFakeV2Env:
         info_frame_stack_keys=None,
         state_catalog=None,
     ) -> None:
+        poison_enabled = game == "Poison-v0"
         del (
             game,
             scenario,
@@ -710,6 +727,8 @@ class _InMemoryFakeV2Env:
         if render_mode not in (None, "rgb_array"):
             raise ValueError("render_mode must be None or 'rgb_array'")
         self.num_envs = int(num_envs)
+        self.poison_enabled = poison_enabled
+        self.instance_poisoned = False
         self.transport = transport
         self.render_mode = render_mode
         self.state_catalog = catalog
@@ -787,6 +806,10 @@ class _InMemoryFakeV2Env:
         return self._states
 
     def render_lane(self, lane):
+        global _FAKE_PROCESS_POISONED
+        if self.poison_enabled:
+            self.instance_poisoned = True
+            _FAKE_PROCESS_POISONED = True
         if self.render_mode != "rgb_array":
             return None
         return np.full((8, 8, 3), lane, dtype=np.uint8)
@@ -802,7 +825,16 @@ class _InMemoryFakeV2Env:
 
 
 class FakeAdapter:
-    def __init__(self, profile: Profile, provider: str, shape: int, speed: float) -> None:
+    def __init__(
+        self,
+        profile: Profile,
+        provider: str,
+        shape: int,
+        speed: float,
+        *,
+        contract_report: dict[str, Any] | None = None,
+        attestation_sha256: str | None = None,
+    ) -> None:
         self.profile = profile
         self.provider = provider
         self.num_envs = shape
@@ -810,18 +842,13 @@ class FakeAdapter:
         self.step_index = 0
         self._state = np.arange(shape, dtype=np.int64)
         self.in_promo = False
-        contract_env = _InMemoryFakeV2Env(
-            "Fake-v0",
-            num_envs=shape,
-            obs_copy="copy",
-            render_mode="rgb_array",
-        )
-        try:
-            self.contract_report = validate_environment(_InMemoryFakeV2Env, contract_env, provider)
-        finally:
-            contract_env.close()
-        if not self.contract_report["passed"]:
-            raise TurboContractError(self.contract_report)
+        self.contract_report = contract_report or legacy_report(provider, None)
+        self.attestation_sha256 = attestation_sha256
+        self.instance_id = uuid.uuid4().hex
+        self.closed = False
+        self.process_poisoned_at_construction = _FAKE_PROCESS_POISONED
+        self.instance_poisoned = False
+        self.render_calls = 0
 
     def initial_reset(self, seed: int):
         self.step_index = 0
@@ -872,6 +899,9 @@ class FakeAdapter:
         return obs
 
     def render_frames(self) -> list[np.ndarray]:
+        self.render_calls += 1
+        if "poison" in self.provider:
+            self.instance_poisoned = True
         frames = []
         for lane in range(self.num_envs):
             value = int(self._state[lane])
@@ -916,7 +946,7 @@ class FakeAdapter:
         }
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 def integer_area_resize(image: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -1161,53 +1191,84 @@ def _button_masks(
     return masks
 
 
-def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | FakeAdapter:
+def _turbo_construction(
+    request: dict[str, Any], profile: Profile, frame_skip: int
+) -> tuple[type[Any], str, dict[str, Any], tempfile.TemporaryDirectory[str] | None]:
     provider = str(request["provider"])
     shape = int(request["shape"])
-    frame_skip = int(request.get("frame_skip", profile.frame_skip))
     assets = request.get("assets", {})
-    if request.get("adapter") == "fake":
-        return FakeAdapter(profile, provider, shape, float(request.get("fake_speed", 1.0)))
     noop_reset_max = int(request.get("noop_reset_max", 0))
     common = _turbo_v2_options(profile, shape, frame_skip, noop_reset_max=noop_reset_max)
     rom_path = assets.get("rom_path")
-    if request.get("adapter") == "turbo-vector-v2":
-        module = importlib.import_module(str(request["import_name"]))
-        overlay: tempfile.TemporaryDirectory[str] | None = None
-        if provider in {"env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"}:
-            common["rom_path"] = rom_path
-        if provider == "env-stableretro-turbo" and profile.native_transition_exact:
-            common["state_catalog"] = [
-                assets.get("state_paths", {}).get(state, state) for state in profile.states
-            ]
-        if provider == "env-stableretro-turbo":
-            if profile.native_transition_exact and profile.logical_environment == "breakout":
-                overlay, common["info"] = _augmented_breakout_info(module, profile)
-            else:
-                common["info"] = (
-                    None if profile.native_transition_exact else assets.get("info_schema_path")
-                )
-            common["scenario"] = (
-                None if profile.native_transition_exact else assets.get("scenario_path")
+    module = importlib.import_module(str(request["import_name"]))
+    overlay: tempfile.TemporaryDirectory[str] | None = None
+    if provider in {"env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"}:
+        common["rom_path"] = rom_path
+    if provider == "env-stableretro-turbo" and profile.native_transition_exact:
+        common["state_catalog"] = [
+            assets.get("state_paths", {}).get(state, state) for state in profile.states
+        ]
+    if provider == "env-stableretro-turbo":
+        if profile.native_transition_exact and profile.logical_environment == "breakout":
+            overlay, common["info"] = _augmented_breakout_info(module, profile)
+        else:
+            common["info"] = (
+                None if profile.native_transition_exact else assets.get("info_schema_path")
             )
-        if provider == "env-vizdoom-turbo":
-            common["game_variables"] = [
-                key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
-            ]
-        environment_type = getattr(module, str(request["environment_class"]))
-        env, report = _construct_turbo_environment(
-            environment_type, provider, profile.game, common
+        common["scenario"] = (
+            None if profile.native_transition_exact else assets.get("scenario_path")
         )
+    if provider == "env-vizdoom-turbo":
+        common["game_variables"] = [
+            key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
+        ]
+    environment_type = getattr(module, str(request["environment_class"]))
+    return environment_type, profile.game, common, overlay
+
+
+def _create_workload_adapter(request: dict[str, Any], profile: Profile) -> Adapter | FakeAdapter:
+    """Construct a fresh workload environment after fail-closed attestation checks."""
+
+    attestation = request.get("contract_attestation")
+    require_request_matches_spec(request, request.get("execution_spec", {}))
+    attestation_sha256 = require_attestation(request.get("execution_spec", {}), attestation)
+    contract_report = dict(attestation["contract_report"])
+    provider = str(request["provider"])
+    shape = int(request["shape"])
+    frame_skip = int(request.get("frame_skip", profile.frame_skip))
+    if request.get("adapter") == "fake":
+        return FakeAdapter(
+            profile,
+            provider,
+            shape,
+            float(request.get("fake_speed", 1.0)),
+            contract_report=contract_report,
+            attestation_sha256=attestation_sha256,
+        )
+    if request.get("adapter") == "turbo-vector-v2":
+        environment_type, game, options, overlay = _turbo_construction(
+            request, profile, frame_skip
+        )
+        try:
+            env = _construct_turbo_workload_environment(environment_type, provider, game, options)
+        except BaseException:
+            if overlay is not None:
+                overlay.cleanup()
+            raise
         return Adapter(
             env,
             profile,
             provider,
             native_discrete=True,
-            contract_report=report,
+            contract_report=contract_report,
+            attestation_sha256=attestation_sha256,
             overlay=overlay,
         )
     if provider in {"stable-retro", "vizdoom"}:
-        return _create_scalar_adapter(request, profile, frame_skip)
+        adapter = _create_scalar_adapter(request, profile, frame_skip)
+        adapter.contract_report = contract_report
+        adapter.attestation_sha256 = attestation_sha256
+        return adapter
     raise ValueError(f"no built-in adapter for {provider!r}")
 
 
@@ -1271,34 +1332,105 @@ def _augmented_breakout_info(
     return temporary, str(target)
 
 
-def _construct_turbo_environment(
+def _construct_turbo_workload_environment(
     environment_type: type[Any],
     provider: str,
     game: str,
     options: Mapping[str, Any],
-) -> tuple[Any, dict[str, Any]]:
-    """Detect the declaration before construction and enforce v2 before use."""
+) -> Any:
+    """Construct only; dynamic validation belongs exclusively to probe processes."""
 
     api_version = declared_api_version(environment_type)
     kwargs = dict(options)
     kwargs.pop("state", None)  # state_catalog is the sole benchmark start selector
-    if api_version == 2:
-        preflight = validate_constructor(environment_type, provider)
-        if not preflight["passed"]:
-            raise TurboContractError(preflight)
-    elif api_version == 1:
+    if api_version == 1:
         parameters = inspect.signature(environment_type).parameters
         kwargs = {name: value for name, value in kwargs.items() if name in parameters}
-    else:
+    elif api_version != 2:
         raise TurboContractError(legacy_report(provider, api_version))
-    env = environment_type(game=game, **kwargs)
-    if api_version == 1:
-        return env, legacy_report(provider, 1)
-    report = validate_environment(environment_type, env, provider)
-    if not report["passed"]:
-        env.close()
-        raise TurboContractError(report)
-    return env, report
+    return environment_type(game=game, **kwargs)
+
+
+def _probe_contract(
+    request: dict[str, Any], profile: Profile
+) -> tuple[dict[str, Any], str, bool]:
+    """Consume one environment while exercising its complete runtime contract."""
+
+    provider = str(request["provider"])
+    shape = int(request["shape"])
+    frame_skip = int(request.get("frame_skip", profile.frame_skip))
+    instance_id = uuid.uuid4().hex
+    closed = False
+    if request.get("adapter") == "fake":
+        env = _InMemoryFakeV2Env(
+            "Poison-v0" if "poison" in provider else "Fake-v0",
+            num_envs=shape,
+            obs_copy="copy",
+            render_mode="rgb_array",
+        )
+        try:
+            instance_id = uuid.uuid4().hex
+            report = validate_environment(_InMemoryFakeV2Env, env, provider)
+            if "contract-failure" in provider:
+                report = {
+                    **report,
+                    "passed": False,
+                    "promotable": False,
+                    "errors": [*report.get("errors", []), "injected fake contract failure"],
+                }
+                report["report_sha256"] = canonical_json_hash(
+                    {key: value for key, value in report.items() if key != "report_sha256"}
+                )
+        finally:
+            env.close()
+            closed = True
+        return report, instance_id, closed
+    if request.get("adapter") == "turbo-vector-v2":
+        environment_type, game, options, overlay = _turbo_construction(
+            request, profile, frame_skip
+        )
+        env: Any | None = None
+        try:
+            api_version = declared_api_version(environment_type)
+            if api_version == 2:
+                preflight = validate_constructor(environment_type, provider)
+                if not preflight["passed"]:
+                    return preflight, instance_id, True
+            elif api_version != 1:
+                return legacy_report(provider, api_version), instance_id, True
+            env = _construct_turbo_workload_environment(
+                environment_type, provider, game, options
+            )
+            instance_id = uuid.uuid4().hex
+            report = (
+                validate_environment(environment_type, env, provider)
+                if api_version == 2
+                else legacy_report(provider, 1)
+            )
+        finally:
+            if env is not None:
+                env.close()
+            if overlay is not None:
+                overlay.cleanup()
+            closed = True
+        return report, instance_id, closed
+    if provider in {"stable-retro", "vizdoom"}:
+        adapter = _create_scalar_adapter(request, profile, frame_skip)
+        instance_id = adapter.instance_id
+        try:
+            adapter.initial_reset(int(request.get("seed", 123)))
+            action = adapter.benchmark_action(np.zeros(shape, dtype=np.int64))
+            _observations, _rewards, terminated, truncated, _infos = adapter.step(action)
+            done = np.logical_or(terminated, truncated)
+            if np.any(done):
+                adapter.selective_reset(done)
+            adapter.render_frames()
+            report = adapter.contract_report
+        finally:
+            adapter.close()
+            closed = adapter.closed
+        return report, instance_id, closed
+    raise ValueError(f"no built-in adapter for {provider!r}")
 
 
 def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip: int) -> Adapter:
@@ -1465,8 +1597,28 @@ def _snapshot_episode_window(
     return expected
 
 
+def _workload_lifecycle(adapter: Adapter | FakeAdapter) -> dict[str, Any]:
+    if adapter.attestation_sha256 is None:
+        raise RuntimeError("workload adapter has no contract attestation binding")
+    record = {
+        **evidence_binding(adapter.attestation_sha256),
+        "environment_instance_id": adapter.instance_id,
+        "dynamic_contract_validation_calls": 0,
+    }
+    if isinstance(adapter, FakeAdapter):
+        record.update(
+            {
+                "process_poisoned_at_construction": adapter.process_poisoned_at_construction,
+                "instance_poisoned": adapter.instance_poisoned,
+                "render_calls": adapter.render_calls,
+            }
+        )
+    return record
+
+
 def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     try:
         observations, reset_infos = adapter.initial_reset(int(request.get("seed", 123)))
         frames = adapter.render_frames()
@@ -1544,9 +1696,9 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
 
         result = {
             "schema": (
-                "turbobench.semantic-trace/v2"
+                "turbobench.semantic-trace/v3"
                 if profile.native_transition_exact
-                else "turbobench.trace/v1"
+                else "turbobench.trace/v2"
             ),
             "provider": request["provider"],
             "profile": profile.id,
@@ -1557,16 +1709,20 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
             "reset_points": reset_points,
             "completion_step": _completion_step(trace, profile.completion),
             "environment": adapter.metadata(),
+            "lifecycle": _workload_lifecycle(adapter),
         }
         if snapshot_continuation is not None:
             result["snapshot_continuation"] = snapshot_continuation
         return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     try:
         actions = np.asarray(request["actions"], dtype=np.int64)
         prepared = [adapter.benchmark_action(row) for row in actions]
@@ -1575,6 +1731,8 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
         _rollout(adapter, prepared[:warmup_count])
         if isinstance(adapter, FakeAdapter):
             base = 10_000.0 * adapter.speed * adapter.num_envs**0.2
+            if adapter.process_poisoned_at_construction or adapter.instance_poisoned:
+                base *= 0.1
             repetitions = [base * factor for factor in (0.999, 1.0, 1.001)]
         else:
             repetitions = []
@@ -1584,8 +1742,8 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                 _rollout(adapter, prepared)
                 elapsed_ns = time.perf_counter_ns() - started
                 repetitions.append(len(prepared) * adapter.num_envs * 1e9 / elapsed_ns)
-        return {
-            "schema": "turbobench.invocation/v1",
+        result = {
+            "schema": "turbobench.invocation/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "shape": adapter.num_envs,
@@ -1611,9 +1769,13 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                 "encoding",
             ],
             "turbo_contract_report": adapter.contract_report,
+            "lifecycle": _workload_lifecycle(adapter),
         }
+        return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
@@ -1621,7 +1783,8 @@ def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[st
     seeds = tuple(map(int, request.get("seeds", range(256))))
     if profile.logical_environment != "breakout" or maximum <= 0 or len(seeds) < 32:
         raise ValueError("reset distribution requires Breakout, a positive maximum, and 32 seeds")
-    adapter = _create_adapter({**request, "noop_reset_max": maximum}, profile)
+    adapter = _create_workload_adapter({**request, "noop_reset_max": maximum}, profile)
+    result: dict[str, Any] | None = None
     try:
         if adapter.num_envs != 1:
             raise ValueError("reset distribution uses one lane")
@@ -1641,29 +1804,48 @@ def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[st
                     "infos": selected,
                 }
             )
-        return {
-            "schema": "turbobench.reset-distribution/v1",
+        result = {
+            "schema": "turbobench.reset-distribution/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "maximum": maximum,
             "samples": samples,
+            "lifecycle": _workload_lifecycle(adapter),
         }
+        return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def run_contract(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
-    try:
-        return {
-            "schema": "turbobench.contract-preflight/v1",
-            "provider": request["provider"],
-            "profile": profile.id,
-            "workload_executed": False,
-            "turbo_contract_report": adapter.contract_report,
-        }
-    finally:
-        adapter.close()
+    require_request_matches_spec(request, request["execution_spec"])
+    report, instance_id, closed = _probe_contract(request, profile)
+    contract_attestation = attest(request["execution_spec"], report)
+    return {
+        "schema": "turbobench.contract-preflight/v2",
+        "provider": request["provider"],
+        "profile": profile.id,
+        "shape": int(request["shape"]),
+        "workload_executed": False,
+        "turbo_contract_report": report,
+        "execution_spec": request["execution_spec"],
+        "contract_attestation": contract_attestation,
+        "lifecycle": {
+            "execution_protocol": contract_attestation["protocol"],
+            "environment_instance_id": instance_id,
+            "environment_closed": closed,
+            "process_global_poisoned": (
+                _FAKE_PROCESS_POISONED if request.get("adapter") == "fake" else None
+            ),
+            "instance_poisoned": (
+                "poison" in str(request.get("provider"))
+                if request.get("adapter") == "fake"
+                else None
+            ),
+        },
+    }
 
 
 def _rollout(adapter: Adapter | FakeAdapter, prepared: Sequence[np.ndarray]) -> None:
@@ -1675,7 +1857,8 @@ def _rollout(adapter: Adapter | FakeAdapter, prepared: Sequence[np.ndarray]) -> 
 
 
 def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     output = Path(request["output_frames"])
     output.parent.mkdir(parents=True, exist_ok=True)
     frame_hashes: list[str] = []
@@ -1718,8 +1901,8 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
                     if completion_step is None:
                         completion_step = step
                     break
-        return {
-            "schema": "turbobench.replay/v1",
+        result = {
+            "schema": "turbobench.replay/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "action_stream_sha256": request["promo_action_sha256"],
@@ -1731,9 +1914,13 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
             "completion_step": completion_step,
             "raw_file_sha256": sha256_file(output),
             "turbo_contract_report": adapter.contract_report,
+            "lifecycle": _workload_lifecycle(adapter),
         }
+        return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def _completion_step(trace: Sequence[dict[str, Any]], completion: dict[str, Any]) -> int | None:
@@ -1789,6 +1976,11 @@ def _jsonable(value: Any) -> Any:
 def execute(request: dict[str, Any]) -> dict[str, Any]:
     profile = get_profile(str(request["profile"]))
     operation = request["operation"]
+    if operation in _WORKLOAD_OPERATIONS:
+        require_request_matches_spec(request, request.get("execution_spec", {}))
+        require_attestation(
+            request.get("execution_spec", {}), request.get("contract_attestation")
+        )
     started = time.time_ns()
     try:
         if operation == "contract":
@@ -1814,6 +2006,8 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
             "turbo_contract_report": exc.report,
         }
     payload["runner"] = {
+        "pid": os.getpid(),
+        "operation": operation,
         "python": os.sys.version.split()[0],
         "provider_distribution": request.get("distribution"),
         "provider_version": _distribution_version(request.get("distribution")),

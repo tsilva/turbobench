@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
+from turbobench.lifecycle import EXECUTION_PROTOCOL, AttestationError, require_attestation
 from turbobench.profiles import (
     action_stream_hash,
     canonical_actions,
@@ -143,7 +144,7 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
         if not (root / directory).is_dir():
             errors.append(f"required directory is missing: {directory}/")
     if not errors:
-        _verify_consistency(root, manifest, errors)
+        _verify_consistency(root, manifest, errors, warnings)
     return {
         "passed": not errors,
         "bundle_id": manifest.get("bundle_id"),
@@ -153,16 +154,24 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
     }
 
 
-def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str]) -> None:
+def _verify_consistency(
+    root: Path, manifest: dict[str, Any], errors: list[str], warnings: list[str]
+) -> None:
     try:
         result = read_json(root / "result.json")
         lock = read_json(root / "resolved-lock.json")
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"result or lock is unreadable: {exc}")
         return
-    if result.get("schema") != RESULT_SCHEMA:
+    result_schema = result.get("schema")
+    if result_schema not in {RESULT_SCHEMA, "turbobench.result/v2"}:
         errors.append("unsupported result schema")
         return
+    if result_schema == "turbobench.result/v2":
+        warnings.append(
+            "legacy 1.0.3-2.0.6 bundle integrity is verifiable, but performance evidence "
+            "may be lifecycle-contaminated and should be rerun before supporting claims"
+        )
     try:
         profile = get_profile(result["profile"]["id"])
     except (KeyError, ValueError) as exc:
@@ -204,19 +213,22 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         errors.append("Turbo API contract reports are missing")
     else:
         recorded = read_json(contract_path)
-        if recorded.get("schema") != "turbobench.turbo-contract-reports/v1":
-            errors.append("unsupported Turbo API contract report collection")
-        if recorded.get("reports") != contract:
-            errors.append("Turbo API contract reports differ from result.json")
-        for side, report in contract.items():
-            if report.get("schema") != "turbobench.turbo-contract-report/v1":
-                errors.append(f"{side} has an unsupported Turbo contract report")
-                continue
-            expected_report_hash = canonical_json_hash(
-                {key: value for key, value in report.items() if key != "report_sha256"}
-            )
-            if report.get("report_sha256") != expected_report_hash:
-                errors.append(f"{side} Turbo contract report hash mismatch")
+        if result_schema == RESULT_SCHEMA:
+            _verify_phase_isolated_contracts(root, result, lock, recorded, errors)
+        else:
+            if recorded.get("schema") != "turbobench.turbo-contract-reports/v1":
+                errors.append("unsupported Turbo API contract report collection")
+            if recorded.get("reports") != contract:
+                errors.append("Turbo API contract reports differ from result.json")
+            for side, report in contract.items():
+                if report.get("schema") != "turbobench.turbo-contract-report/v1":
+                    errors.append(f"{side} has an unsupported Turbo contract report")
+                    continue
+                expected_report_hash = canonical_json_hash(
+                    {key: value for key, value in report.items() if key != "report_sha256"}
+                )
+                if report.get("report_sha256") != expected_report_hash:
+                    errors.append(f"{side} Turbo contract report hash mismatch")
         turbo_gate = next(
             (
                 gate
@@ -225,7 +237,11 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
             ),
             None,
         )
-        expected_gate = all(report.get("promotable") for report in contract.values())
+        expected_gate = all(
+            report.get("promotable")
+            for value in contract.values()
+            for report in (value.values() if result_schema == RESULT_SCHEMA else (value,))
+        )
         if turbo_gate is None or bool(turbo_gate.get("passed")) != expected_gate:
             errors.append("Turbo API validity gate is missing or inconsistent")
     if result.get("comparison", {}).get("outcome") not in {
@@ -367,6 +383,135 @@ def _verify_consistency(root: Path, manifest: dict[str, Any], errors: list[str])
         except json.JSONDecodeError:
             errors.append(f"JSON artifact is unreadable: {path.relative_to(root)}")
     errors.extend(f"portable output violation: {item}" for item in portability)
+
+
+def _verify_phase_isolated_contracts(
+    root: Path,
+    result: dict[str, Any],
+    lock: dict[str, Any],
+    recorded: dict[str, Any],
+    errors: list[str],
+) -> None:
+    attestations = result.get("contract_attestations")
+    if (
+        result.get("execution_protocol") != EXECUTION_PROTOCOL
+        or lock.get("execution_protocol") != EXECUTION_PROTOCOL
+        or recorded.get("protocol") != EXECUTION_PROTOCOL
+    ):
+        errors.append("phase-isolated execution protocol identity is missing or inconsistent")
+    if recorded.get("schema") != "turbobench.contract-attestations/v1":
+        errors.append("unsupported contract attestation collection")
+    if not isinstance(attestations, dict) or recorded.get("attestations") != attestations:
+        errors.append("contract attestations differ from result.json")
+        return
+    response_by_hash: dict[str, dict[str, Any]] = {}
+    for path in (root / "verification" / "attestations").glob("*.json"):
+        response = read_json(path)
+        attestation = response.get("contract_attestation", {})
+        digest = attestation.get("attestation_sha256")
+        if isinstance(digest, str):
+            response_by_hash[digest] = response
+    expected_by_side_shape: dict[tuple[str, str], str] = {}
+    for side, records in attestations.items():
+        if not isinstance(records, dict):
+            errors.append(f"{side} contract attestations are malformed")
+            continue
+        for shape, attestation in records.items():
+            digest = attestation.get("attestation_sha256")
+            response = response_by_hash.get(digest)
+            if response is None:
+                errors.append(f"{side} shape {shape} attestation evidence is missing")
+                continue
+            try:
+                spec = response.get("execution_spec", {})
+                require_attestation(spec, attestation)
+            except AttestationError as exc:
+                errors.append(f"{side} shape {shape} attestation is invalid: {exc}")
+                spec = {}
+            report = attestation.get("contract_report", {})
+            expected_report_hash = canonical_json_hash(
+                {key: value for key, value in report.items() if key != "report_sha256"}
+            )
+            if (
+                report != result.get("turbo_contract", {}).get(side, {}).get(shape)
+                or report.get("schema") != "turbobench.turbo-contract-report/v1"
+                or report.get("report_sha256") != expected_report_hash
+                or bool(attestation.get("passed")) != bool(report.get("passed"))
+                or bool(attestation.get("promotable")) != bool(report.get("promotable"))
+            ):
+                errors.append(f"{side} shape {shape} contract report binding is invalid")
+            if (
+                spec.get("provider") != lock.get("providers", {}).get(side)
+                or spec.get("profile") != lock.get("profile")
+                or spec.get("assets") != lock.get("assets")
+                or spec.get("python_minor") != lock.get("python_minor")
+                or str(spec.get("constructor", {}).get("shape")) != shape
+            ):
+                errors.append(f"{side} shape {shape} execution spec differs from the lock")
+            if not response.get("lifecycle", {}).get("environment_closed"):
+                errors.append(f"{side} shape {shape} contract environment was not closed")
+            expected_by_side_shape[(side, str(shape))] = str(digest)
+    promo_expected: dict[str, str] = {}
+    for side, attestation in result.get("promo", {}).get(
+        "contract_attestations", {}
+    ).items():
+        digest = attestation.get("attestation_sha256")
+        response = response_by_hash.get(digest)
+        if response is None:
+            errors.append(f"promo {side} contract attestation evidence is missing")
+            continue
+        try:
+            spec = response.get("execution_spec", {})
+            require_attestation(spec, attestation)
+        except AttestationError as exc:
+            errors.append(f"promo {side} contract attestation is invalid: {exc}")
+            spec = {}
+        if (
+            spec.get("provider") != lock.get("providers", {}).get(side)
+            or spec.get("constructor", {}).get("frame_skip") != 1
+            or spec.get("constructor", {}).get("shape") != 1
+        ):
+            errors.append(f"promo {side} execution spec differs from the lock")
+        promo_expected[side] = str(digest)
+    for shape in result.get("comparison", {}).get("shapes", {}):
+        shape_dir = root / "raw" / f"shape-{shape}"
+        for path in shape_dir.glob("*.json"):
+            if path.name == "pairs.json":
+                continue
+            side = "left" if "left" in path.stem else "right" if "right" in path.stem else None
+            if side is None:
+                continue
+            lifecycle = read_json(path).get("lifecycle", {})
+            expected = expected_by_side_shape.get((side, shape))
+            if (
+                lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+                or lifecycle.get("contract_attestation_sha256") != expected
+                or lifecycle.get("dynamic_contract_validation_calls") != 0
+                or lifecycle.get("environment_closed") is not True
+            ):
+                errors.append(f"{path.relative_to(root)} has a mismatched contract attestation")
+    replay_path = root / "verification" / "promo-replay.json"
+    if replay_path.is_file():
+        replay = read_json(replay_path)
+        for side in ("left", "right"):
+            lifecycle = replay.get(side, {}).get("lifecycle", {})
+            if (
+                lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+                or lifecycle.get("contract_attestation_sha256") != promo_expected.get(side)
+                or lifecycle.get("dynamic_contract_validation_calls") != 0
+                or lifecycle.get("environment_closed") is not True
+            ):
+                errors.append(f"promo {side} replay attestation is inconsistent")
+    gate = next(
+        (
+            item
+            for item in result.get("validity", {}).get("gates", [])
+            if item.get("name") == "phase-isolated execution protocol"
+        ),
+        None,
+    )
+    if gate is None or not gate.get("passed"):
+        errors.append("phase-isolated execution validity gate is missing or failed")
 
 
 def _verify_reused_correctness(

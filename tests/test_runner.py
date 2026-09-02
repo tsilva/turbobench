@@ -5,8 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from turbobench.correctness import compare_replays, compare_traces
+from turbobench.lifecycle import execution_spec
 from turbobench.profiles import (
     action_stream_hash,
     canonical_actions,
@@ -355,7 +357,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 def _trace_request(profile_id: str, shape: int = 3) -> dict:
     profile = get_profile(profile_id)
     actions = canonical_actions(profile, shape, profile.measurement_steps)
-    return {
+    return _attested_request({
         "operation": "trace",
         "provider": "fake",
         "adapter": "fake",
@@ -367,6 +369,33 @@ def _trace_request(profile_id: str, shape: int = 3) -> dict:
         "seed": 123,
         "actions": actions.tolist(),
         "action_stream_sha256": action_stream_hash(profile, actions),
+    })
+
+
+def _attested_request(request: dict) -> dict:
+    profile = get_profile(request["profile"])
+    spec = execution_spec(
+        provider={
+            "provider": request["provider"],
+            "adapter": request["adapter"],
+            "artifact_sha256": "fake",
+        },
+        harness={"version": "test", "source_sha256": "test"},
+        python_minor="test",
+        platform={"os": "test", "os_release": "test", "architecture": "test"},
+        profile={"id": profile.id, "sha256": "test"},
+        constructor={
+            "shape": request["shape"],
+            "frame_skip": request.get("frame_skip", profile.frame_skip),
+            "noop_reset_max": request.get("noop_reset_max", 0),
+        },
+        assets={},
+    )
+    probe = execute({**request, "operation": "contract", "execution_spec": spec})
+    return {
+        **request,
+        "execution_spec": spec,
+        "contract_attestation": probe["contract_attestation"],
     }
 
 
@@ -415,9 +444,55 @@ def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> N
         "promo_actions": actions,
         "promo_action_sha256": promo_action_hash(profile, actions),
     }
-    left = execute({**base, "output_frames": str(tmp_path / "left.rgb")})
-    right = execute({**base, "provider": "fake-2", "output_frames": str(tmp_path / "right.rgb")})
+    left = execute(
+        _attested_request({**base, "output_frames": str(tmp_path / "left.rgb")})
+    )
+    right = execute(
+        _attested_request(
+            {**base, "provider": "fake-2", "output_frames": str(tmp_path / "right.rgb")}
+        )
+    )
     gate = compare_replays(left, right, profile)
     assert gate["passed"]
     assert gate["completion_step"] == 1_986
     assert gate["frame_count"] == 1_987
+    assert left["lifecycle"]["render_calls"] > 0
+    assert right["lifecycle"]["render_calls"] > 0
+
+
+def test_workload_environment_closes_when_execution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = get_profile("supermario/world1-v1")
+    actions = canonical_actions(profile, 1, 2)
+    request = _attested_request(
+        {
+            "operation": "benchmark",
+            "provider": "fake",
+            "adapter": "fake",
+            "distribution": "turbobench",
+            "profile": profile.id,
+            "shape": 1,
+            "assets": {},
+            "fake_speed": 1.0,
+            "seed": 123,
+            "actions": actions.tolist(),
+            "action_stream_sha256": action_stream_hash(profile, actions),
+        }
+    )
+    closed: list[str] = []
+    original_close = FakeAdapter.close
+
+    def fail_step(self, action):
+        raise RuntimeError("injected step failure")
+
+    def record_close(self):
+        original_close(self)
+        closed.append(self.instance_id)
+
+    monkeypatch.setattr(FakeAdapter, "step", fail_step)
+    monkeypatch.setattr(FakeAdapter, "close", record_close)
+
+    with pytest.raises(RuntimeError, match="injected step failure"):
+        execute(request)
+    assert len(closed) == 1
