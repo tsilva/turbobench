@@ -1,0 +1,61 @@
+schema = "turbobench.workload-profile/v1"
+id = "supermario/world1-v1"
+logical_environment = "supermario"
+game = "SuperMarioBros-Nes-v0"
+providers = ["env-supermariobrosnes-turbo-emu", "env-stableretro-turbo", "stable-retro"]
+states = ["Level1-1", "Level1-2", "Level1-3", "Level1-4"]
+semantic_actions = ["noop", "right", "right_b", "right_a"]
+info_integer = ["levelHi", "levelLo", "lives", "score", "time", "scrolling", "xscrollHi", "xscrollLo"]
+info_float = []
+
+[action_table]
+noop = []
+right = ["RIGHT"]
+right_b = ["RIGHT", "B"]
+right_a = ["RIGHT", "A"]
+right_a_b = ["RIGHT", "A", "B"]
+a = ["A"]
+left = ["LEFT"]
+start = ["START"]
+
+[observation]
+frame_skip = 4
+frame_stack = 4
+crop_top = 32
+crop_bottom = 0
+crop_mode = "mask"
+resize = [84, 84]
+grayscale = true
+layout = "chw"
+resize_algorithm = "area"
+maxpool_last_two = false
+
+[benchmark]
+shapes = [1, 16, 32]
+steps = 250
+correctness_steps = 256
+
+[parity]
+authority = "stable-retro"
+authority_version = "1.0.1"
+candidates = ["env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"]
+checks = ["action-identity", "transition-exact", "reset-exact", "snapshot-continuation", "required-info"]
+shapes = [1, 4]
+steps = 4096
+quick_shapes = [4]
+quick_steps = 32
+seed = 123
+snapshot_prefix_steps = 128
+snapshot_suffix_steps = 128
+
+[promo]
+kind = "mario-imported-v1"
+steps = 1986
+completion_json = '{"keys":["levelHi","levelLo"],"kind":"info-change","step":1986}'
+
+[exact]
+native_transition_exact = true
+allowed_representation_conversion = "rgb888-expanded-to-rgb565-native-code"
+
+[asset]
+sha256 = "f61548fdf1670cffefcc4f0b7bdcdd9eaba0c226e3b74f8666071496988248de"

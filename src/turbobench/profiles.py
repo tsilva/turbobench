@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
 
 from turbobench.model import Profile
+from turbobench.profile_config import get_profile_document, load_profile_documents
 from turbobench.util import canonical_json_hash
 
 MARIO_ROM_SHA256 = "f61548fdf1670cffefcc4f0b7bdcdd9eaba0c226e3b74f8666071496988248de"
@@ -28,152 +30,14 @@ _MARIO_PROMO_PACKED = (
 )
 
 
-_MARIO_ACTION_TABLE = {
-    "noop": (),
-    "right": ("RIGHT",),
-    "right_b": ("RIGHT", "B"),
-    "right_a": ("RIGHT", "A"),
-    "right_a_b": ("RIGHT", "A", "B"),
-    "a": ("A",),
-    "left": ("LEFT",),
-    "start": ("START",),
-}
-_BREAKOUT_ACTION_TABLE = {
-    "noop": (),
-    "fire": ("BUTTON",),
-    "right": ("RIGHT",),
-    "left": ("LEFT",),
-}
-_VIZDOOM_ACTION_TABLE = {
-    "noop": (),
-    "left": ("MOVE_LEFT",),
-    "right": ("MOVE_RIGHT",),
-    "attack": ("ATTACK",),
-    "left_attack": ("MOVE_LEFT", "ATTACK"),
-    "right_attack": ("MOVE_RIGHT", "ATTACK"),
-}
-
-
+_PROFILE_DOCUMENTS = load_profile_documents()
 PROFILES: dict[str, Profile] = {
-    "supermario/world1-v1": Profile(
-        id="supermario/world1-v1",
-        logical_environment="supermario",
-        game="SuperMarioBros-Nes-v0",
-        providers=("env-supermariobrosnes-turbo-emu", "env-stableretro-turbo", "stable-retro"),
-        shapes=(1, 16, 32),
-        states=("Level1-1", "Level1-2", "Level1-3", "Level1-4"),
-        semantic_actions=("noop", "right", "right_b", "right_a"),
-        action_table=_MARIO_ACTION_TABLE,
-        info_integer=("levelHi", "levelLo", "lives", "score", "time", "scrolling", "xscrollHi", "xscrollLo"),
-        crop_top=32,
-        crop_mode="mask",
-        promo_kind="mario-imported-v1",
-        promo_steps=MARIO_PROMO_ACTION_COUNT,
-        completion={"kind": "info-change", "keys": ["levelHi", "levelLo"], "step": 1986},
-        asset_sha256=MARIO_ROM_SHA256,
-    ),
-    "breakout/start-v1": Profile(
-        id="breakout/start-v1",
-        logical_environment="breakout",
-        game="Breakout-Atari2600-v0",
-        providers=("env-breakoutatari2600-turbo-native", "env-stableretro-turbo", "stable-retro"),
-        shapes=(1, 16, 32),
-        states=("Start",),
-        semantic_actions=("noop", "fire", "right", "left"),
-        action_table=_BREAKOUT_ACTION_TABLE,
-        info_integer=("score", "lives", "ball_y"),
-        promo_kind="breakout-deterministic-v1",
-        promo_steps=1_800,
-        completion={"kind": "trajectory-end", "step": 1800},
-    ),
-    "supermario/world1-v2": Profile(
-        id="supermario/world1-v2",
-        logical_environment="supermario",
-        game="SuperMarioBros-Nes-v0",
-        providers=("env-supermariobrosnes-turbo-emu", "env-stableretro-turbo", "stable-retro"),
-        shapes=(1, 4),
-        states=("Level1-1", "Level1-2", "Level1-3", "Level1-4"),
-        semantic_actions=("noop", "right", "right_b", "right_a"),
-        action_table=_MARIO_ACTION_TABLE,
-        info_integer=("levelHi", "levelLo", "lives", "score", "time", "scrolling", "xscrollHi", "xscrollLo"),
-        crop_top=32,
-        crop_mode="mask",
-        correctness_steps=256,
-        promo_kind="mario-imported-v1",
-        promo_steps=MARIO_PROMO_ACTION_COUNT,
-        completion={"kind": "info-change", "keys": ["levelHi", "levelLo"], "step": 1986},
-        asset_sha256=MARIO_ROM_SHA256,
-        native_transition_exact=True,
-    ),
-    "breakout/start-v2": Profile(
-        id="breakout/start-v2",
-        logical_environment="breakout",
-        game="Breakout-Atari2600-v0",
-        providers=("env-breakoutatari2600-turbo-native", "env-stableretro-turbo", "stable-retro"),
-        shapes=(1, 4),
-        states=("Start",),
-        semantic_actions=("noop", "fire", "right", "left"),
-        action_table=_BREAKOUT_ACTION_TABLE,
-        info_integer=("score", "lives", "ball_y"),
-        correctness_steps=256,
-        promo_kind="breakout-deterministic-v1",
-        promo_steps=1_800,
-        completion={"kind": "trajectory-end", "step": 1800},
-        native_transition_exact=True,
-    ),
-    "breakout/start-v3": Profile(
-        id="breakout/start-v3",
-        logical_environment="breakout",
-        game="Breakout-Atari2600-v0",
-        providers=("env-breakoutatari2600-turbo-native", "env-stableretro-turbo", "stable-retro"),
-        shapes=(1, 16, 32),
-        states=("Start",),
-        semantic_actions=("noop", "fire", "right", "left"),
-        action_table=_BREAKOUT_ACTION_TABLE,
-        info_integer=("score", "lives"),
-        promo_kind="breakout-deterministic-v1",
-        promo_steps=1_800,
-        completion={"kind": "trajectory-end", "step": 1800},
-    ),
-    "vizdoom/basic-v1": Profile(
-        id="vizdoom/basic-v1",
-        logical_environment="vizdoom-basic",
-        game="VizdoomBasic-v1",
-        providers=("env-vizdoom-turbo", "vizdoom"),
-        shapes=(1, 16, 32),
-        states=("default",),
-        semantic_actions=("noop", "left", "right"),
-        action_table=_VIZDOOM_ACTION_TABLE,
-        info_integer=("killcount", "health", "ammo2", "episode_time"),
-        promo_kind="vizdoom-basic-deterministic-v1",
-        promo_steps=2_100,
-        completion={"kind": "terminal-or-info-at-least", "key": "killcount", "value": 1},
-    ),
-    "vizdoom/basic-v2": Profile(
-        id="vizdoom/basic-v2",
-        logical_environment="vizdoom-basic",
-        game="VizdoomBasic-v1",
-        providers=("env-vizdoom-turbo", "vizdoom"),
-        shapes=(1, 4),
-        states=("default",),
-        semantic_actions=("noop", "left", "right"),
-        action_table=_VIZDOOM_ACTION_TABLE,
-        info_integer=("killcount", "health", "ammo2", "episode_time"),
-        correctness_steps=256,
-        promo_kind="vizdoom-basic-deterministic-v1",
-        promo_steps=2_100,
-        completion={"kind": "terminal-or-info-at-least", "key": "killcount", "value": 1},
-        native_transition_exact=True,
-    ),
+    profile_id: document.profile for profile_id, document in _PROFILE_DOCUMENTS.items()
 }
 
 
 def allowed_representation_conversion(profile: Profile) -> str:
-    if profile.logical_environment == "supermario":
-        return "rgb888-expanded-to-rgb565-native-code"
-    if profile.logical_environment == "breakout" and profile.native_transition_exact:
-        return BREAKOUT_RGB_TRANSPORT_CONVERSION
-    return "identity"
+    return profile.allowed_representation_conversion
 
 
 def get_profile(profile_id: str) -> Profile:
@@ -279,43 +143,7 @@ def promo_action_hash(profile: Profile, actions: tuple[tuple[str, ...], ...]) ->
 
 
 def profile_payload(profile: Profile) -> dict[str, Any]:
-    return {
-        "id": profile.id,
-        "logical_environment": profile.logical_environment,
-        "game": profile.game,
-        "providers": list(profile.providers),
-        "shapes": list(profile.shapes),
-        "states": list(profile.states),
-        "benchmark": {
-            "frame_skip": profile.frame_skip,
-            "frame_stack": profile.frame_stack,
-            "grayscale": profile.grayscale,
-            "resize": list(profile.resize),
-            "layout": profile.layout,
-            "crop_top": profile.crop_top,
-            "crop_bottom": profile.crop_bottom,
-            "crop_mode": profile.crop_mode,
-            "resize_algorithm": profile.resize_algorithm,
-            "maxpool_last_two": profile.maxpool_last_two,
-            "steps": profile.benchmark_steps,
-            "correctness_steps": profile.correctness_steps,
-            "semantic_actions": list(profile.semantic_actions),
-            "action_table": {
-                name: list(labels) for name, labels in profile.action_table.items()
-            },
-        },
-        "promo": {
-            "kind": profile.promo_kind,
-            "steps": profile.promo_steps,
-            "completion": profile.completion,
-        },
-        "signals": {"integer": list(profile.info_integer), "float": list(profile.info_float)},
-        "asset_sha256": profile.asset_sha256,
-        "exact": {
-            "native_transition_exact": profile.native_transition_exact,
-            "allowed_representation_conversion": allowed_representation_conversion(profile),
-        },
-    }
+    return deepcopy(get_profile_document(profile.id).payload)
 
 
 def profile_hash(profile: Profile) -> str:
@@ -323,58 +151,4 @@ def profile_hash(profile: Profile) -> str:
 
 
 def profile_toml(profile: Profile) -> str:
-    def quoted(value: str) -> str:
-        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-    def strings(values: tuple[str, ...]) -> str:
-        return "[" + ", ".join(quoted(value) for value in values) + "]"
-
-    lines = [
-        f"schema = {quoted('turbobench.profile/v2' if profile.native_transition_exact else 'turbobench.profile/v1')}",
-        f"id = {quoted(profile.id)}",
-        f"logical_environment = {quoted(profile.logical_environment)}",
-        f"game = {quoted(profile.game)}",
-        f"providers = {strings(profile.providers)}",
-        f"shapes = [{', '.join(map(str, profile.shapes))}]",
-        f"states = {strings(profile.states)}",
-        "",
-        "[benchmark]",
-        f"frame_skip = {profile.frame_skip}",
-        f"frame_stack = {profile.frame_stack}",
-        f"grayscale = {str(profile.grayscale).lower()}",
-        f"resize = [{profile.resize[0]}, {profile.resize[1]}]",
-        f"layout = {quoted(profile.layout)}",
-        f"crop_top = {profile.crop_top}",
-        f"crop_bottom = {profile.crop_bottom}",
-        f"crop_mode = {quoted(profile.crop_mode)}",
-        f"resize_algorithm = {quoted(profile.resize_algorithm)}",
-        f"maxpool_last_two = {str(profile.maxpool_last_two).lower()}",
-        f"steps = {profile.benchmark_steps}",
-        f"correctness_steps = {profile.correctness_steps}",
-        f"semantic_actions = {strings(profile.semantic_actions)}",
-        "",
-        "[action_table]",
-        *(f"{name} = {strings(labels)}" for name, labels in profile.action_table.items()),
-        "",
-        "[promo]",
-        f"kind = {quoted(profile.promo_kind)}",
-        f"steps = {profile.promo_steps}",
-        f"completion_json = {quoted(__import__('json').dumps(profile.completion, sort_keys=True, separators=(',', ':')))}",
-        "",
-        "[signals]",
-        f"integer = {strings(profile.info_integer)}",
-        f"float = {strings(profile.info_float)}",
-    ]
-    if profile.native_transition_exact:
-        lines.extend(
-            (
-                "",
-                "[exact]",
-                "native_transition_exact = true",
-                "allowed_representation_conversion = "
-                + quoted(allowed_representation_conversion(profile)),
-            )
-        )
-    if profile.asset_sha256:
-        lines.extend(("", "[asset]", f"sha256 = {quoted(profile.asset_sha256)}"))
-    return "\n".join(lines) + "\n"
+    return get_profile_document(profile.id).toml

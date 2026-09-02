@@ -6,10 +6,9 @@
 
 `turbobench` is a local Python CLI for reinforcement-learning environment authors,
 researchers, and provider maintainers who need fair performance comparisons between
-compatible implementations and standardized cross-provider parity checks. Immutable
-parity profiles pin the original authority, exact checks, full workload, and quick
-development workload. Both parity and benchmark runs produce portable,
-self-verifying evidence.
+compatible implementations and standardized cross-provider parity checks. Each immutable
+workload profile contains both its performance settings and its parity contract, so the same
+profile ID drives both operations. Runs produce portable, self-verifying evidence.
 
 Optional comparison videos replay the same locked providers and semantic action trajectory.
 Only valid, conclusive evidence can produce unmarked promotional media; diagnostic output is
@@ -47,11 +46,11 @@ turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile as
 turbobench profiles list                 # list immutable workloads
 turbobench providers list                # list built-in and registered providers
 
-turbobench parity supermario/world1-v2 \
+turbobench parity supermario/world1-v1 \
   --candidate env-supermariobrosnes-turbo-emu@checkout:/absolute/path/to/repo \
   --allow-dirty --quick                         # test current work diagnostically
 
-turbobench parity vizdoom/basic-v2 \
+turbobench parity vizdoom/basic-v1 \
   --candidate env-vizdoom-turbo@artifact:/absolute/path/to/final.whl \
   --output turbobench-parity/vizdoom            # certify the exact final wheel
 
@@ -62,12 +61,12 @@ turbobench compare vizdoom/basic-v1 \
   --right vizdoom@1.3.0 \
   --output turbobench-results/vizdoom            # create a result bundle
 
-turbobench compare breakout/start-v3 \
+turbobench compare breakout/start-v1 \
   --left env-breakoutatari2600-turbo-native@VERSION \
   --right stable-retro@1.0.1 \
   --output turbobench-results/breakout-vs-stable-retro
 
-turbobench compare breakout/start-v3 \
+turbobench compare breakout/start-v1 \
   --left env-breakoutatari2600-turbo-native@VERSION \
   --right env-stableretro-turbo@VERSION \
   --output turbobench-results/breakout-vs-stable-retro-turbo
@@ -87,10 +86,9 @@ final machine-readable JSON.
 
 - The controller supports Python 3.11 and newer. Provider runtimes default to CPython 3.14.
   `uv`, FFmpeg, and FFprobe are required.
-- Current performance profiles cover `supermario/world1-v1`,
-  `breakout/start-v3`, and `vizdoom/basic-v1`. Historical profiles remain
-  available for verifying their existing result bundles. Shapes 1, 16, and 32
-  are measured and reported independently.
+- Current workload profiles are `supermario/world1-v1`, `breakout/start-v1`,
+  and `vizdoom/basic-v1`. The same ID is used with `compare` and `parity`.
+  Benchmark shapes 1, 16, and 32 are measured and reported independently.
 - Provider references accept `provider`, `provider@latest`, `provider@VERSION`,
   `provider@artifact:/absolute/path.whl`, and `provider@checkout:/absolute/path`.
   `latest` excludes prereleases, yanked releases,
@@ -98,7 +96,7 @@ final machine-readable JSON.
 - Set `TURBOBENCH_ROM_PATH`, `TURBOBENCH_ASSET_ROOT`, or `RETRO_DATA_PATH` to locate required
   local game payloads. ROMs and local paths are never written to portable bundles; only
   canonical digests are recorded.
-- The `breakout/start-v3` profile compares the Atari 2600 Breakout `Start`
+- The `breakout/start-v1` profile compares the Atari 2600 Breakout `Start`
   workload against either original Stable Retro or Stable Retro Turbo. Replace
   `VERSION` with an exact release, use `@latest`, or select a clean checkout
   with `@checkout:/absolute/path`.

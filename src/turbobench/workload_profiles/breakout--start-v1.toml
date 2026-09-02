@@ -1,0 +1,54 @@
+schema = "turbobench.workload-profile/v1"
+id = "breakout/start-v1"
+logical_environment = "breakout"
+game = "Breakout-Atari2600-v0"
+providers = ["env-breakoutatari2600-turbo-native", "env-stableretro-turbo", "stable-retro"]
+states = ["Start"]
+semantic_actions = ["noop", "fire", "right", "left"]
+info_integer = ["score", "lives", "ball_y"]
+info_float = []
+
+[action_table]
+noop = []
+fire = ["BUTTON"]
+right = ["RIGHT"]
+left = ["LEFT"]
+
+[observation]
+frame_skip = 4
+frame_stack = 4
+crop_top = 0
+crop_bottom = 0
+crop_mode = "remove"
+resize = [84, 84]
+grayscale = true
+layout = "chw"
+resize_algorithm = "area"
+maxpool_last_two = false
+
+[benchmark]
+shapes = [1, 16, 32]
+steps = 250
+correctness_steps = 256
+
+[parity]
+authority = "stable-retro"
+authority_version = "1.0.1"
+candidates = ["env-breakoutatari2600-turbo-native", "env-stableretro-turbo"]
+checks = ["action-identity", "transition-exact", "reset-exact", "snapshot-continuation", "required-info", "reset-distribution"]
+shapes = [1, 4]
+steps = 4096
+quick_shapes = [1]
+quick_steps = 32
+seed = 123
+snapshot_prefix_steps = 128
+snapshot_suffix_steps = 128
+
+[promo]
+kind = "breakout-deterministic-v1"
+steps = 1800
+completion_json = '{"kind":"trajectory-end","step":1800}'
+
+[exact]
+native_transition_exact = true
+allowed_representation_conversion = "stable-retro-bgr-rgb565-to-canonical-stella-rgb"
