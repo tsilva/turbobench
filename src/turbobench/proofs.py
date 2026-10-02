@@ -11,13 +11,40 @@ from typing import Any
 from turbobench.profiles import get_profile
 from turbobench.util import canonical_json_hash, read_json, sha256_file, write_json
 
-PROOF_SCHEMAS = {f"turbobench.{kind}-proof/v1" for kind in ("policy", "benchmark", "showcase")}
+PROOF_SCHEMAS = {
+    f"turbobench.{kind}-proof/v{version}"
+    for kind in ("policy", "benchmark", "showcase")
+    for version in (1, 2)
+}
+LEGACY_SCHEMA_FILES = {
+    "policy-proof-v1.json",
+    "benchmark-proof-v1.json",
+    "showcase-proof-v1.json",
+    "comparison-request-v1.json",
+}
+
+V2_SCHEMA_FILES = LEGACY_SCHEMA_FILES | {
+    "policy-proof-v2.json", "benchmark-proof-v2.json", "showcase-proof-v2.json",
+    "comparison-request-v2.json", "resolved-workload-v1.json",
+    "policy-contract-v1.json", "environment-declaration-v1.json",
+}
+
+
+def _schema_files(schema: str) -> set[str]:
+    # A future schema addition must not change existing proof inventories.
+    return V2_SCHEMA_FILES if schema.endswith("/v2") else LEGACY_SCHEMA_FILES
 
 
 def validate_document(document: dict[str, Any]) -> None:
     """Validate the shipped JSON schema subset without executing plug-in code."""
     name = document.get("schema", "")
-    allowed = PROOF_SCHEMAS | {"turbobench.comparison-request/v1"}
+    allowed = PROOF_SCHEMAS | {
+        "turbobench.comparison-request/v1",
+        "turbobench.comparison-request/v2",
+        "turbobench.resolved-workload/v1",
+        "turbobench.policy-contract/v1",
+        "turbobench.environment-declaration/v1",
+    }
     if name not in allowed:
         raise ValueError(f"unsupported proof schema: {name}")
     schema = json.loads(
@@ -58,7 +85,7 @@ def finalize_proof(root: Path, schema: str, bindings: dict[str, Any]) -> dict[st
     schema_directory = root / "schemas"
     schema_directory.mkdir(exist_ok=True)
     for resource in files("turbobench").joinpath("schemas").iterdir():
-        if resource.name.endswith(".json"):
+        if resource.name in _schema_files(schema):
             (schema_directory / resource.name).write_bytes(resource.read_bytes())
     records = []
     for path in proof_files(root):
@@ -118,7 +145,7 @@ def verify_proof(root: Path) -> dict[str, Any]:
             raise ValueError("proof inventory differs from package contents")
         for resource in files("turbobench").joinpath("schemas").iterdir():
             if (
-                resource.name.endswith(".json")
+                resource.name in _schema_files(manifest["schema"])
                 and (root / "schemas" / resource.name).read_bytes() != resource.read_bytes()
             ):
                 raise ValueError("embedded schema differs from the declared contract version")
@@ -127,7 +154,19 @@ def verify_proof(root: Path) -> dict[str, Any]:
             contract = policy_contract(root, get_profile(bindings["profile"]))
             if contract != bindings["contract"]:
                 raise ValueError("policy contract binding mismatch")
-        elif manifest["schema"] == "turbobench.benchmark-proof/v1":
+        elif manifest["schema"] == "turbobench.policy-proof/v2":
+            from turbobench.policy_contracts import normalize_policy
+            from turbobench.workloads import preliminary_workload
+
+            contract = normalize_policy(root)
+            validate_document(contract)
+            if (
+                contract != bindings["contract"]
+                or read_json(root / "policy-contract.json") != contract
+            ):
+                raise ValueError("normalized policy/source contract mismatch")
+            preliminary_workload(contract, bindings["definition"])
+        elif manifest["schema"].startswith("turbobench.benchmark-proof/"):
             from turbobench.bundle import _verify_consistency
             from turbobench.workflow import (
                 validate_request,
@@ -138,12 +177,19 @@ def verify_proof(root: Path) -> dict[str, Any]:
             request = read_json(root / "request.json")
             validate_request(request)
             result = read_json(root / "result.json")
-            if bindings != {
+            expected_bindings = {
                 "request_id": request["request_id"],
                 "policy_id": request["policy_id"],
                 "benchmark_machine": read_json(root / "benchmark-machine.json"),
                 "mode": "smoke" if request["smoke"] else "full",
-            }:
+            }
+            if manifest["schema"].endswith("/v2"):
+                expected_bindings["workload_sha256"] = canonical_json_hash(
+                    request["resolved_workload"]
+                )
+                if read_json(root / "resolved-workload.json") != request["resolved_workload"]:
+                    raise ValueError("archived workload differs from request")
+            if bindings != expected_bindings:
                 raise ValueError("benchmark request/host binding mismatch")
             if (
                 request["harness_sha256"] != result["tool"]["source_sha256"]
@@ -208,3 +254,62 @@ def pack_policy(
     require_proof(staging)
     staging.rename(output)
     return output
+
+
+def pack_policy_resolved(
+    model: Path,
+    capture: Path,
+    actions: Path,
+    output: Path,
+    definition: str | None,
+    mlflow_url: str,
+    limitations: str,
+) -> Path:
+    from turbobench.policy_contracts import normalize_policy
+    from turbobench.workloads import definition_for_policy, preliminary_workload
+
+    if output.exists() or output.with_name(output.name + ".partial").exists():
+        raise FileExistsError(output)
+    staging = output.with_name(output.name + ".partial")
+    staging.mkdir(parents=True)
+    for name in ("model.json", "model.zip", "recipe.json"):
+        shutil.copyfile(model / name, staging / name)
+    shutil.copyfile(capture, staging / "capture.json")
+    shutil.copyfile(actions, staging / "actions.json")
+    write_json(staging / "provenance.json", {"mlflow_url": mlflow_url, "limitations": limitations})
+    contract = normalize_policy(staging)
+    identity = definition or definition_for_policy(contract)
+    preliminary_workload(contract, identity)
+    write_json(staging / "policy-contract.json", contract)
+    finalize_proof(
+        staging, "turbobench.policy-proof/v2", {"definition": identity, "contract": contract}
+    )
+    require_proof(staging)
+    staging.rename(output)
+    return output
+
+
+def migrate_policy(root: Path) -> Path:
+    proof = require_proof(root)
+    if proof["schema"] == "turbobench.policy-proof/v2":
+        return root
+    if proof["schema"] != "turbobench.policy-proof/v1":
+        raise ValueError("not a supported policy package")
+    output = root.parent / (proof["proof_id"] + "-resolved-v2")
+    if output.exists():
+        migrated = require_proof(output)
+        from turbobench.policy_contracts import normalize_policy
+
+        if migrated["bindings"]["contract"] != normalize_policy(root):
+            raise ValueError("existing migrated policy differs from its original inputs")
+        return output
+    provenance = read_json(root / "provenance.json")
+    return pack_policy_resolved(
+        root,
+        root / "capture.json",
+        root / "actions.json",
+        output,
+        None,
+        provenance["mlflow_url"],
+        provenance["limitations"],
+    )

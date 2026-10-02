@@ -70,6 +70,7 @@ class ScalarWorkerConfig:
     rom_path: str | None = None
     state_paths: tuple[tuple[str, str], ...] = ()
     noop_reset_max: int = 0
+    representation_conversion: str = ""
 
 
 class ScalarPreprocessingEnv:
@@ -1139,7 +1140,10 @@ def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
         if (
             config.profile_id
-            and get_profile(config.profile_id).allowed_representation_conversion
+            and (
+                config.representation_conversion
+                or get_profile(config.profile_id).allowed_representation_conversion
+            )
             == "stable-retro-platform-rgb565-to-training-bgr-and-canonical-stella-rgb/v1"
             and platform.system() == "Linux"
         ):
@@ -1466,6 +1470,7 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
         ScalarWorkerConfig(
             provider=provider,
             profile_id=profile.id,
+            representation_conversion=profile.allowed_representation_conversion,
             game=profile.game,
             state=profile.states[lane % len(profile.states)],
             integration_path=integration_path,
@@ -1848,6 +1853,41 @@ def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[st
             result["lifecycle"]["environment_closed"] = adapter.closed
 
 
+def run_declaration(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    """Read exact runtime capabilities in a fresh, excluded introspection instance."""
+    adapter = _create_workload_adapter(request, profile)
+    try:
+        observations, _infos = adapter.initial_reset(int(request.get("seed", 123)))
+        env = getattr(adapter, "env", None)
+        capabilities = _jsonable(dict(getattr(env, "capabilities", {})))
+        if request["adapter"] in {"stable-retro-scalar", "vizdoom-scalar", "fake"}:
+            # Capabilities of the scalar preprocessing adapter, rather than a
+            # guessed declaration for its upstream package.
+            capabilities = {
+                "supported_observation_layouts": ["chw"],
+                "supported_observation_color_modes": ["grayscale"],
+                "supported_resize_algorithms": ["area"],
+                "supported_crop_modes": ["remove", "mask"],
+                "supports_maxpool_last_two": False,
+            }
+        states = _jsonable(getattr(env, "state_catalog", profile.states))
+        table = getattr(adapter, "_table", tuple(profile.action_table.values()))
+        result = {
+            "schema": "turbobench.environment-declaration/v1",
+            "provider": request["execution_spec"]["provider"],
+            "capabilities": capabilities,
+            "states": states,
+            "actions": _jsonable(table),
+            "observation_shape": list(np.asarray(observations).shape[1:]),
+            "preflight": request["declaration_preflight"],
+            "lifecycle": _workload_lifecycle(adapter),
+        }
+    finally:
+        adapter.close()
+    result["lifecycle"]["environment_closed"] = adapter.closed
+    return result
+
+
 def run_contract(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
     require_request_matches_spec(request, request["execution_spec"])
     report, instance_id, closed = _probe_contract(request, profile)
@@ -2003,7 +2043,9 @@ def _jsonable(value: Any) -> Any:
 
 
 def execute(request: dict[str, Any]) -> dict[str, Any]:
-    profile = get_profile(str(request["profile"]))
+    from turbobench.workloads import request_profile
+
+    profile = request_profile(request)
     operation = request["operation"]
     if operation in _WORKLOAD_OPERATIONS:
         require_request_matches_spec(request, request.get("execution_spec", {}))
@@ -2012,6 +2054,8 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if operation == "contract":
             payload = run_contract(request, profile)
+        elif operation == "declaration":
+            payload = run_declaration(request, profile)
         elif operation == "trace":
             payload = run_trace(request, profile)
         elif operation == "benchmark":

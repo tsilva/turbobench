@@ -69,7 +69,8 @@ class ResolvedProvider:
         payload["installed_lock"] = [
             (
                 f"{self.distribution}=={self.version}"
-                if " @ file://" in line and line.split(" @ ", 1)[0].casefold().replace("_", "-")
+                if " @ file://" in line
+                and line.split(" @ ", 1)[0].casefold().replace("_", "-")
                 == self.distribution.casefold().replace("_", "-")
                 else line
             )

@@ -40,7 +40,7 @@ def _host(host: str) -> str:
 
 def _policy(path: Path) -> dict[str, Any]:
     proof = require_proof(path)
-    if proof["schema"] != "turbobench.policy-proof/v1":
+    if proof["schema"] not in {"turbobench.policy-proof/v1", "turbobench.policy-proof/v2"}:
         raise ValueError(f"not a policy package: {path}")
     return proof
 
@@ -65,7 +65,7 @@ def _discover_policy(profile: str | None) -> tuple[Path, dict[str, Any]]:
             proof = _policy(manifest.parent)
         except (ValueError, RuntimeError, FileNotFoundError):
             continue
-        if profile is None or proof["bindings"]["profile"] == profile:
+        if profile is None or policy_profile(proof) == profile:
             matches.setdefault(proof["proof_id"], (manifest.parent, proof))
     if len(matches) == 1:
         return next(iter(matches.values()))
@@ -76,6 +76,10 @@ def _discover_policy(profile: str | None) -> tuple[Path, dict[str, Any]]:
     raise ValueError(
         "multiple verified policy packages; choose one with configure --policy PATH or --policy PATH"
     )
+
+
+def policy_profile(proof: dict[str, Any]) -> str:
+    return proof["bindings"].get("definition") or proof["bindings"]["profile"]
 
 
 def _training_provider(path: Path, profile: Any) -> str:
@@ -107,13 +111,13 @@ def apply_comparison_defaults(args: Any) -> None:
                 raise ValueError(
                     "configured policy changed; configure --policy PATH to select it again"
                 )
-            if args.profile is None or selected_proof["bindings"]["profile"] == args.profile:
+            if args.profile is None or policy_profile(selected_proof) == args.profile:
                 args.policy, proof = selected, selected_proof
         if args.policy is None:
             args.policy, proof = _discover_policy(args.profile)
         proof = proof or _policy(args.policy)
-        args.profile = args.profile or proof["bindings"]["profile"]
-        if args.profile != proof["bindings"]["profile"]:
+        args.profile = args.profile or policy_profile(proof)
+        if args.profile != policy_profile(proof):
             raise ValueError("locked policy package does not match the selected profile")
         args.benchmark_host = (
             args.benchmark_host
@@ -127,7 +131,14 @@ def apply_comparison_defaults(args: Any) -> None:
         _host(args.benchmark_host)
     if not args.profile:
         raise ValueError("provide a profile ID, or use --showcase with a verified policy package")
-    profile = get_profile(args.profile)
+    if args.showcase and proof["schema"] == "turbobench.policy-proof/v2":
+        from turbobench.workloads import preliminary_workload, profile_from_workload
+
+        profile = profile_from_workload(
+            preliminary_workload(proof["bindings"]["contract"], args.profile)
+        )
+    else:
+        profile = get_profile(args.profile)
     args.left = args.left or f"{profile.authority}@{profile.authority_version}"
     if not args.right:
         if args.showcase:

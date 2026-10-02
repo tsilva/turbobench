@@ -103,13 +103,9 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
             "errors": [f"manifest.json is unreadable: {exc}"],
             "warnings": warnings,
         }
-    if manifest.get("schema") in {
-        "turbobench.benchmark-proof/v1",
-        "turbobench.policy-proof/v1",
-        "turbobench.showcase-proof/v1",
-    }:
-        from turbobench.proofs import verify_proof
+    from turbobench.proofs import PROOF_SCHEMAS, verify_proof
 
+    if manifest.get("schema") in PROOF_SCHEMAS:
         return verify_proof(root)
     if manifest.get("schema") != "turbobench.manifest/v1":
         errors.append("unsupported manifest schema")
@@ -190,7 +186,9 @@ def _verify_consistency(
             "may be lifecycle-contaminated and should be rerun before supporting claims"
         )
     try:
-        profile = get_profile(result["profile"]["id"])
+        from turbobench.workloads import bundle_profile
+
+        profile = bundle_profile(root, result)
     except (KeyError, ValueError) as exc:
         errors.append(str(exc))
         return

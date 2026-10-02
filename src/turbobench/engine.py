@@ -19,7 +19,13 @@ from turbobench import DISTRIBUTION_NAME, RESULT_SCHEMA, __version__
 from turbobench.assets import discover_assets
 from turbobench.bundle import finalize_manifest, verify_bundle
 from turbobench.correctness import compare_replays, compare_traces
-from turbobench.lifecycle import EXECUTION_PROTOCOL, execution_spec, require_attestation
+from turbobench.lifecycle import (
+    EXECUTION_PROTOCOL,
+    AttestationError,
+    execution_spec,
+    require_attestation,
+    require_evidence_binding,
+)
 from turbobench.model import Gate, Profile, ProviderRef, ResolvedProvider
 from turbobench.profiles import (
     action_stream_hash,
@@ -94,7 +100,7 @@ def run_comparison(
     output: Path,
     options: ComparisonOptions,
 ) -> tuple[Path, dict[str, Any]]:
-    profile = get_profile(profile_id)
+    profile = profile_id if isinstance(profile_id, Profile) else get_profile(profile_id)
     definitions = load_providers()
     options.report_progress(f"Resolving providers for {profile.id}")
     resolution = resolve_pair(
@@ -160,6 +166,16 @@ def run_comparison_resolved(
     partial.mkdir(parents=True, exist_ok=True)
     for directory in ("raw", "verification", "media"):
         (partial / directory).mkdir(exist_ok=True)
+    if profile.resolved_workload is not None:
+        from turbobench.workloads import probe_declarations
+
+        declarations = probe_declarations(
+            profile, {"left": left, "right": right}, options.report_progress
+        )
+        for side, declaration in declarations.items():
+            write_json(
+                partial / "verification" / "provider-declarations" / f"{side}.json", declaration
+            )
     discovered_private, discovered_portable = discover_assets(profile)
     assets = private_assets if private_assets is not None else discovered_private
     asset_record = portable_assets if portable_assets is not None else discovered_portable
@@ -195,6 +211,8 @@ def run_comparison_resolved(
         }
         write_json(journal_path, journal)
     (partial / "profile.toml").write_text(profile_toml(profile), encoding="utf-8")
+    if profile.resolved_workload is not None:
+        write_json(partial / "resolved-workload.json", profile.resolved_workload)
     write_json(partial / "resolved-lock.json", lock)
 
     shapes = _selected_shapes(profile, options)
@@ -677,6 +695,11 @@ def _base_request(
         "import_name": provider.import_name,
         "environment_class": provider.environment_class,
         "profile": profile.id,
+        **(
+            {"resolved_workload": profile.resolved_workload}
+            if profile.resolved_workload is not None
+            else {}
+        ),
         "shape": shape,
         "assets": assets,
         "fake_speed": speed,
@@ -985,15 +1008,10 @@ def _require_evidence_binding(
     spec: dict[str, Any],
     attestation: dict[str, Any],
 ) -> None:
-    expected = require_attestation(spec, attestation)
-    lifecycle = evidence.get("lifecycle", {})
-    if (
-        lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
-        or lifecycle.get("contract_attestation_sha256") != expected
-        or lifecycle.get("dynamic_contract_validation_calls") != 0
-        or lifecycle.get("environment_closed") is not True
-    ):
-        raise RuntimeError("runner evidence does not match its contract attestation")
+    try:
+        require_evidence_binding(evidence, spec, attestation)
+    except AttestationError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _validity_gates(

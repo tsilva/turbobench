@@ -44,7 +44,7 @@ Use `--output turbobench-results/breakout-full` when you want a fixed path,
 including for resumable runs. Keep the benchmark host idle during
 an official measurement; the load gate waits up to 15 minutes. Stop other jobs
 through their normal controls before starting. Full measurements use the
-profile's environment counts **1, 16, 32**, one warmup pair, and seven alternating
+protocol's environment counts **1, 16, 32**, one warmup pair, and seven alternating
 AB/BA pairs with three repetitions per invocation. Shape-local confidence
 intervals use a deterministic paired bootstrap. Exact package references make
 the tested provider versions explicit. Use a different eligible candidate
@@ -56,10 +56,13 @@ Defaults are stored on the render machine in
 `~/.config/turbobench/config.json`), outside the repository. Run `turbobench
 configure` without flags to inspect them. The selected policy proof ID is pinned:
 replacing its contents requires an explicit `configure --policy PATH` selection.
-The profile is inferred from that package; the authority/version is pinned by
-the profile, and the candidate/version is read from the saved training metadata.
-For the example policy these resolve to `breakout/firstwall-policy-v1`,
-`stable-retro@1.0.1`, and `env-breakoutatari2600-turbo-native@0.5.13`.
+The comparison definition is inferred from the saved policy game. It pins the
+upstream authority/version; the candidate/version comes from saved training
+metadata. FirstWall resolves to `breakout/policy-v1`, protocol
+`paired-environment/v1`, `stable-retro@1.0.1`, and
+`env-breakoutatari2600-turbo-native@0.5.13`. The workload ID includes a digest
+of the recipe-derived settings, exact provider declarations, and comparison
+rules. No policy-specific TOML needs to be maintained.
 Rendering defaults to local. No training or sampling parameters are guessed.
 
 Explicit flags take priority. `TURBOBENCH_BENCHMARK_HOST` overrides the configured
@@ -72,7 +75,7 @@ from the profile and the right provider to its sole candidate's latest eligible
 release; profiles with multiple candidates require `--right`.
 
 Smoke uses **1 and 2 environments, one pair, one repetition per provider,
-zero warmups**, retaining the profile's 256 measurement steps. It checks the
+zero warmups**, retaining the protocol's 256 measurement steps. It checks the
 entire transfer/proof/replay/render flow, returns success only when it completes,
 and emits visibly diagnostic assets. It has no CI, significance outcome, or
 official performance claim. Package quarantine and host-load gates remain
@@ -99,7 +102,7 @@ are deliberately unsupported in the two-host release workflow. Independent
 ## Import another captured GradLab policy
 
 ```bash
-uv run --frozen turbobench policy-pack breakout/firstwall-policy-v1 \
+uv run --frozen turbobench policy-pack \
   --model /absolute/path/to/gradlab/public-model \
   --capture /absolute/path/to/policy-playback.json \
   --actions /absolute/path/to/comparison-actions.json \
@@ -111,10 +114,14 @@ uv run --frozen turbobench policy-pack breakout/firstwall-policy-v1 \
 The current importer accepts GradLab model format 3, recipe format 4, recorded
 `gradlab.readme-playback/v1`, and `turbobench.imported-policy-actions/v1`. It
 imports an existing inference capture; it does not execute the checkpoint.
-This first importer supports the image-based Breakout contract represented by
-the shipped FirstWall profile. Other games need an immutable compatible profile
-and an explicit importer for their saved policy format; the renderer's style and
-proof/host-separation constraints apply to them too. Missing or mismatched
+The importer normalizes the saved policy contract once. A compatible Breakout
+recipe can change frameskip, stack, resize, crop, or action ordering without a
+new policy-specific profile. The current upstream image adapter supports CHW
+uint8 grayscale with area resize, zero-filled remove/mask crop, no maxpool, no
+sticky actions, and no fire reset. Unsupported operations fail before timing.
+Other games need a versioned comparison definition and compatible provider
+adapters; other saved model formats need an importer. Shared measurement,
+proof, host-separation, and rendering code remains reusable. Missing or mismatched
 training metadata fails closed. Never substitute another frame skip to improve
 a displayed speedup.
 
@@ -126,11 +133,12 @@ The complete saved task/context/input recipe remains in the package. Neutral
 reset-prefix controls are added after the three trained action IDs in the
 FirstWall raw recording table; policy decision IDs and cadence remain unchanged.
 
-`firstwall-policy-v1` explicitly declares a bijection from Linux Stable Retro's
+The `breakout/policy-v1` comparison definition explicitly declares a bijection from Linux Stable Retro's
 nine RGB565 palette IDs to the macOS BGR transport saved by this policy's
 training contract. Unknown colors are rejected. Canonical rendered frames,
 preprocessed observations, rewards, lifecycle, and selected infos must still
-match exactly. This new profile does not alter `breakout/start-v1`.
+match exactly. Existing canonical parity profiles and their hashes, including
+`breakout/start-v1` and `breakout/firstwall-policy-v1`, remain unchanged.
 
 The archived excerpt ends at 429 points with four lives. The previously captured
 full episode diverged at raw frame 5914; neither the excerpt nor its showcase
@@ -141,21 +149,24 @@ limitations rather than inheriting these example values.
 
 ```text
 comparison/
-  manifest.json                # turbobench.showcase-proof/v1
+  manifest.json                # turbobench.showcase-proof/v2
   benchmark/
-    manifest.json              # turbobench.benchmark-proof/v1
-    request.json               # turbobench.comparison-request/v1
+    manifest.json              # turbobench.benchmark-proof/v2
+    request.json               # turbobench.comparison-request/v2
     result.json                # result/v2, or smoke-only result/v3
     resolved-lock.json
     benchmark-machine.json
-    profile.toml
+    profile.toml                # generated pointer to the frozen workload
+    resolved-workload.json      # full inputs, settings, source hashes and origins
     raw/                       # contracts, traces, raw timing samples
     verification/              # parity, replay hashes, phase attestations
+      provider-declarations/   # actual benchmark-host artifact capabilities
   policy/
-    manifest.json              # turbobench.policy-proof/v1
+    manifest.json              # turbobench.policy-proof/v2
     model.zip                  # exact checkpoint, not loaded by verification
     model.json
     recipe.json
+    policy-contract.json        # normalized training contract, including wrappers
     capture.json
     actions.json
     provenance.json
@@ -208,3 +219,32 @@ result packages stay under ignored `turbobench-results`, outside Git and wheels.
 
 Use the project skill `.codex/skills/comparison-showcase/SKILL.md` and the
 [approved presentation reference](comparison-media.md) when refreshing assets.
+
+## Workload ownership and migration
+
+The exact provider package declares supported actions, states and observation
+operations. The saved policy chooses requested preprocessing, reset behavior,
+ordered controls and input/wrapper contracts. TurboBench owns the upstream
+authority, canonical ROM/state digests, required checks, compatibility and
+sampling protocol. The resolver
+validates these sources and freezes them in `resolved-workload/v1` with a
+content-derived ID and field-level source references.
+
+Both providers are probed in fresh excluded processes on the render host before
+the request is frozen. The benchmark host independently probes its platform
+artifacts against the same settings and canonical assets, then uses separate instances for correctness,
+timing and hash-only replay. Its declarations and attestations are archived.
+Rendering follows that exact workload and requires cross-host replay equality.
+
+New imports produce `policy-proof/v2`; the workflow produces request, benchmark
+and showcase documents at v2. Existing v1 policy packages are verified and
+migrated to a content-addressed sibling automatically; originals stay intact.
+Explicit legacy profile imports and old proof verification remain supported.
+To pin the migrated package in local defaults, select its printed path with
+`configure --policy PATH`. No checkpoint bytes are changed or executed by import.
+
+Verification reconstructs the workload from its archived inputs, validates the
+recognized TurboBench definition/protocol version, and checks model, actions,
+artifact, host and asset bindings. It does not consult the current profile
+registry or live provider defaults. Changing a trusted comparison rule requires
+a new version; an embedded document cannot weaken checks.

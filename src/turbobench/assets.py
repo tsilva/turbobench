@@ -30,9 +30,18 @@ STATE_SHA256: dict[str, dict[str, str]] = {
 
 def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return private runner paths and a separate path-free portable record."""
+    declaration = (profile.resolved_workload or {}).get("definition", {}).get("assets")
+    if declaration is not None and not declaration["required"]:
+        return {}, {"required": False, "available": True, "assets": []}
     if profile.logical_environment == "vizdoom-basic":
         return {}, {"required": False, "assets": []}
-    expected = MARIO_ROM_SHA256 if profile.logical_environment == "supermario" else BREAKOUT_ROM_SHA256
+    expected = (
+        declaration["game_payload_sha256"]
+        if declaration is not None
+        else MARIO_ROM_SHA256
+        if profile.logical_environment == "supermario"
+        else BREAKOUT_ROM_SHA256
+    )
     game_dirs = _find_game_dirs(profile)
     if not game_dirs:
         return {}, {
@@ -42,7 +51,12 @@ def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
             "detail": f"canonical {profile.game} payload was not found",
         }
     roms = sorted(
-        {path.resolve() for game_dir in game_dirs for path in game_dir.glob("rom.*") if path.is_file()}
+        {
+            path.resolve()
+            for game_dir in game_dirs
+            for path in game_dir.glob("rom.*")
+            if path.is_file()
+        }
     )
     matching = next((path for path in roms if sha256_file(path) == expected), None)
     if matching is None:
@@ -58,7 +72,13 @@ def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
     state_records: list[dict[str, str]] = []
     missing_states: list[str] = []
     for state in profile.states:
-        expected_state = STATE_SHA256.get(profile.id, {}).get(state)
+        expected_state = (
+            declaration["states"].get(state)
+            if declaration is not None
+            else STATE_SHA256.get(profile.id, {}).get(state)
+        )
+        if declaration is not None and expected_state is None:
+            raise ValueError("comparison definition has no canonical digest for the policy state")
         candidates = [
             game_dir / f"{state}.state"
             for game_dir in game_dirs

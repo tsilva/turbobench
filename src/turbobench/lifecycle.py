@@ -68,9 +68,7 @@ def attest(spec: Mapping[str, Any], contract_report: Mapping[str, Any]) -> dict[
     return payload
 
 
-def require_attestation(
-    spec: Mapping[str, Any], attestation: Mapping[str, Any] | None
-) -> str:
+def require_attestation(spec: Mapping[str, Any], attestation: Mapping[str, Any] | None) -> str:
     """Fail closed unless an attestation matches this exact execution spec."""
 
     if not isinstance(attestation, Mapping):
@@ -96,9 +94,7 @@ def require_attestation(
     return expected_attestation_hash
 
 
-def require_request_matches_spec(
-    request: Mapping[str, Any], spec: Mapping[str, Any]
-) -> None:
+def require_request_matches_spec(request: Mapping[str, Any], spec: Mapping[str, Any]) -> None:
     """Reject request/spec substitution before any provider environment is built."""
 
     expected_spec_hash = canonical_json_hash(
@@ -112,6 +108,10 @@ def require_request_matches_spec(
         raise AttestationError("execution spec is malformed or has an invalid hash")
     provider = spec.get("provider", {})
     profile = spec.get("profile", {})
+    if "resolved_workload" in request and canonical_json_hash(
+        request["resolved_workload"]
+    ) != profile.get("sha256"):
+        raise AttestationError("runner workload does not match execution spec")
     constructor = spec.get("constructor", {})
     comparisons = {
         "provider": (request.get("provider"), provider.get("provider")),
@@ -140,3 +140,18 @@ def evidence_binding(attestation_sha256: str) -> dict[str, str]:
         "execution_protocol": EXECUTION_PROTOCOL,
         "contract_attestation_sha256": attestation_sha256,
     }
+
+
+def require_evidence_binding(
+    evidence: Mapping[str, Any], spec: Mapping[str, Any], attestation: Mapping[str, Any]
+) -> None:
+    """Validate excluded preflight binding without coordinator dependencies."""
+    expected = require_attestation(spec, attestation)
+    lifecycle = evidence.get("lifecycle", {})
+    if (
+        lifecycle.get("execution_protocol") != EXECUTION_PROTOCOL
+        or lifecycle.get("contract_attestation_sha256") != expected
+        or lifecycle.get("dynamic_contract_validation_calls") != 0
+        or lifecycle.get("environment_closed") is not True
+    ):
+        raise AttestationError("runner evidence does not match its contract attestation")

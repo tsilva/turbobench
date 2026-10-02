@@ -1,0 +1,47 @@
+{
+  "$id": "turbobench.resolved-workload/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "configuration": {
+      "type": "object"
+    },
+    "declarations": {
+      "type": "object"
+    },
+    "definition": {
+      "type": "object"
+    },
+    "field_sources": {
+      "type": "object"
+    },
+    "id": {
+      "type": "string"
+    },
+    "policy_contract": {
+      "type": "object"
+    },
+    "protocol": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "turbobench.resolved-workload/v1",
+      "type": "string"
+    },
+    "source_sha256": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "definition",
+    "protocol",
+    "policy_contract",
+    "declarations",
+    "configuration",
+    "source_sha256",
+    "field_sources"
+  ],
+  "type": "object"
+}
