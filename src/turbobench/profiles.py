@@ -130,6 +130,8 @@ def promo_action_hash(profile: Profile, actions: tuple[tuple[str, ...], ...]) ->
 
 
 def profile_payload(profile: Profile) -> dict[str, Any]:
+    if profile.resolved_workload is not None:
+        return deepcopy(profile.resolved_workload)
     return deepcopy(get_profile_document(profile.id).payload)
 
 
@@ -138,4 +140,7 @@ def profile_hash(profile: Profile) -> str:
 
 
 def profile_toml(profile: Profile) -> str:
+    if profile.resolved_workload is not None:
+        # The resolved JSON is the authority; this TOML is an immutable pointer.
+        return f'schema = "turbobench.resolved-workload-reference/v1"\nid = "{profile.id}"\nsha256 = "{profile_hash(profile)}"\n'
     return get_profile_document(profile.id).toml

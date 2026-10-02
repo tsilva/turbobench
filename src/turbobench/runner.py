@@ -13,6 +13,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import os
+import platform
 import shutil
 import tempfile
 import time
@@ -220,13 +221,9 @@ class ScalarPreprocessingEnv:
 
     def restore_parity_snapshots(
         self,
-        snapshots: Sequence[
-            tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]
-        ],
+        snapshots: Sequence[tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]],
     ) -> bool:
-        reset_seed, history, expected_stack, expected_raw = snapshots[
-            self.config.worker_index
-        ]
+        reset_seed, history, expected_stack, expected_raw = snapshots[self.config.worker_index]
         self._restoring_snapshot = True
         try:
             self.reset(seed=reset_seed)
@@ -411,11 +408,7 @@ class Adapter:
             raise RuntimeError("selective reset requested before the initial seeded reset")
         self._reset_generations[mask] += 1
         seeds = [
-            (
-                self._initial_seed
-                + int(self._reset_generations[lane]) * self.num_envs
-                + lane
-            )
+            (self._initial_seed + int(self._reset_generations[lane]) * self.num_envs + lane)
             % (2**32)
             if mask[lane]
             else None
@@ -586,9 +579,7 @@ class Adapter:
                 else "identity"
             ),
             "native_transition_exact": self.profile.native_transition_exact,
-            "allowed_representation_conversion": allowed_representation_conversion(
-                self.profile
-            ),
+            "allowed_representation_conversion": allowed_representation_conversion(self.profile),
             "ram": {
                 "representation": (
                     "nes-cpu-ram-0x0000-0x07ff"
@@ -1115,10 +1106,10 @@ def _canonical_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
 
 def _comparison_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray:
     value = frame
-    if (
-        profile.logical_environment == "breakout"
-        and provider in {"stable-retro", "env-stableretro-turbo"}
-    ):
+    if profile.logical_environment == "breakout" and provider in {
+        "stable-retro",
+        "env-stableretro-turbo",
+    }:
         value = _canonical_stella_rgb(value)
     return _canonical_raw_rgb(value, profile)
 
@@ -1146,10 +1137,58 @@ def _semantic_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray
 def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     value = normalize_rgb(frame)
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
+        if (
+            config.profile_id
+            and get_profile(config.profile_id).allowed_representation_conversion
+            == "stable-retro-platform-rgb565-to-training-bgr-and-canonical-stella-rgb/v1"
+            and platform.system() == "Linux"
+        ):
+            return _linux_stella_training_transport(value)
         # Stable Retro derives policy observations from these raw bytes.
         # Human rendering normalizes the separate comparison boundary.
         return value
     return value
+
+
+def _linux_stella_training_transport(frame: Any) -> np.ndarray:
+    """Losslessly map Linux RGB565 palette IDs to the saved macOS BGR transport.
+
+    This conversion is explicitly selected by the new policy-compatible profile.
+    It is a bijection on the nine Breakout palette IDs, not a visual tolerance.
+    Reject any unrecognized palette ID instead of approximating its pixels.
+    """
+    source = np.bitwise_and(normalize_rgb(frame), np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
+    source_palette = [
+        (0, 0, 0),
+        (136, 140, 136),
+        (200, 72, 72),
+        (192, 108, 56),
+        (176, 120, 48),
+        (160, 160, 40),
+        (72, 160, 72),
+        (64, 72, 200),
+        (64, 156, 128),
+    ]
+    training_palette = [
+        (0, 0, 0),
+        (142, 142, 142),
+        (72, 72, 200),
+        (58, 108, 198),
+        (48, 122, 180),
+        (42, 162, 162),
+        (72, 160, 72),
+        (200, 72, 66),
+        (130, 158, 66),
+    ]
+    result = np.empty_like(source)
+    seen = np.zeros(source.shape[:2], dtype=np.bool_)
+    for original, trained in zip(source_palette, training_palette, strict=True):
+        mask = np.all(source == original, axis=-1)
+        result[mask] = trained
+        seen |= mask
+    if not np.all(seen):
+        raise ValueError("Linux Stable Retro frame contains an undeclared Breakout palette ID")
+    return np.ascontiguousarray(result)
 
 
 def _canonical_stella_rgb(frame: Any) -> np.ndarray:
@@ -1246,9 +1285,7 @@ def _create_workload_adapter(request: dict[str, Any], profile: Profile) -> Adapt
             attestation_sha256=attestation_sha256,
         )
     if request.get("adapter") == "turbo-vector-v2":
-        environment_type, game, options, overlay = _turbo_construction(
-            request, profile, frame_skip
-        )
+        environment_type, game, options, overlay = _turbo_construction(request, profile, frame_skip)
         try:
             env = _construct_turbo_workload_environment(environment_type, provider, game, options)
         except BaseException:
@@ -1315,13 +1352,7 @@ def _turbo_v2_options(
 def _augmented_breakout_info(
     module: Any, profile: Profile
 ) -> tuple[tempfile.TemporaryDirectory[str], str]:
-    source = (
-        Path(module.__file__).resolve().parent
-        / "data"
-        / "stable"
-        / profile.game
-        / "data.json"
-    )
+    source = Path(module.__file__).resolve().parent / "data" / "stable" / profile.game / "data.json"
     if not source.is_file():
         raise FileNotFoundError(f"Stable Retro Turbo data schema is missing: {source.name}")
     temporary = tempfile.TemporaryDirectory(prefix="turbobench-breakout-info-")
@@ -1348,9 +1379,7 @@ def _construct_turbo_workload_environment(
     return environment_type(game=game, **kwargs)
 
 
-def _probe_contract(
-    request: dict[str, Any], profile: Profile
-) -> tuple[dict[str, Any], str, bool]:
+def _probe_contract(request: dict[str, Any], profile: Profile) -> tuple[dict[str, Any], str, bool]:
     """Consume one environment while exercising its complete runtime contract."""
 
     provider = str(request["provider"])
@@ -1383,9 +1412,7 @@ def _probe_contract(
             closed = True
         return report, instance_id, closed
     if request.get("adapter") == "turbo-vector-v2":
-        environment_type, game, options, overlay = _turbo_construction(
-            request, profile, frame_skip
-        )
+        environment_type, game, options, overlay = _turbo_construction(request, profile, frame_skip)
         env: Any | None = None
         try:
             api_version = declared_api_version(environment_type)
@@ -1395,9 +1422,7 @@ def _probe_contract(
                     return preflight, instance_id, True
             else:
                 return unsupported_api_report(provider, api_version), instance_id, True
-            env = _construct_turbo_workload_environment(
-                environment_type, provider, game, options
-            )
+            env = _construct_turbo_workload_environment(environment_type, provider, game, options)
             instance_id = uuid.uuid4().hex
             report = validate_environment(environment_type, env, provider)
         finally:
@@ -1722,14 +1747,23 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
         warmup_count = int(request.get("warmup_steps", min(500, len(prepared))))
         adapter.initial_reset(int(request.get("seed", 123)))
         _rollout(adapter, prepared[:warmup_count])
+        repetition_count = int(request.get("repetitions", 3))
+        if repetition_count != (1 if request.get("smoke") is True else 3):
+            raise ValueError("only smoke may use one timed repetition")
+        if request.get("smoke") and warmup_count != 0:
+            raise ValueError("smoke must have no warmup")
         if isinstance(adapter, FakeAdapter):
             base = 10_000.0 * adapter.speed * adapter.num_envs**0.2
             if adapter.process_poisoned_at_construction or adapter.instance_poisoned:
                 base *= 0.1
-            repetitions = [base * factor for factor in (0.999, 1.0, 1.001)]
+            repetitions = (
+                [base]
+                if repetition_count == 1
+                else [base * factor for factor in (0.999, 1.0, 1.001)]
+            )
         else:
             repetitions = []
-            for repetition in range(3):
+            for repetition in range(repetition_count):
                 adapter.initial_reset(int(request.get("seed", 123)) + repetition)
                 started = time.perf_counter_ns()
                 _rollout(adapter, prepared)
@@ -1741,7 +1775,9 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
             "profile": profile.id,
             "shape": adapter.num_envs,
             "steps": len(prepared),
-            "repetitions": 3,
+            "repetitions": repetition_count,
+            "smoke": request.get("smoke") is True,
+            "warmup_steps": warmup_count,
             "sps": repetitions,
             "action_stream_sha256": request["action_stream_sha256"],
             "timed_includes": [
@@ -1905,7 +1941,7 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
             "frame_sha256": frame_hashes,
             "transitions": transitions,
             "completion_step": completion_step,
-            "raw_file_sha256": sha256_file(output),
+            "raw_file_sha256": sha256_file(output) if str(output) != os.devnull else None,
             "turbo_contract_report": adapter.contract_report,
             "lifecycle": _workload_lifecycle(adapter),
         }
@@ -1971,9 +2007,7 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
     operation = request["operation"]
     if operation in _WORKLOAD_OPERATIONS:
         require_request_matches_spec(request, request.get("execution_spec", {}))
-        require_attestation(
-            request.get("execution_spec", {}), request.get("contract_attestation")
-        )
+        require_attestation(request.get("execution_spec", {}), request.get("contract_attestation"))
     started = time.time_ns()
     try:
         if operation == "contract":

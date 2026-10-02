@@ -5,6 +5,13 @@ description: Build, audit, publish, monitor, or verify turbobench-cli Python rel
 
 # Build Release
 
+Read and apply the shared `$release-workflow` skill at
+`/Users/tsilva/.codex/skills/release-workflow/SKILL.md` before execution.
+It owns common preflight, publication safeguards, `$push` integration,
+workflow monitoring, verification, and reporting. The rules below are this
+project's adapter; they retain its invocation default and required gates.
+If the shared skill is unavailable, stop and report the missing dependency.
+
 Use the repository-owned release path and preserve the distinction between a
 local candidate and external publication. A local candidate is reversible;
 pushing a release tag publishes externally when the trusted-publishing workflow
@@ -133,46 +140,19 @@ git tag -a turbobench-cli-v<version> -m "Release turbobench-cli-v<version>"
 git push --atomic <remote> HEAD turbobench-cli-v<version>
 ```
 
-Do not create or switch branches, move an existing release tag, manually upload
-with Twine, print credentials, or put a PyPI token on a command line. Trusted
-publishing is the only normal publication path.
-
 ## Verify publication
 
-Resolve the tag commit and monitor only its matching release workflow:
+Follow the shared monitoring and verification procedure for the `release.yml`
+tag-push run at the full `turbobench-cli-v<version>` commit SHA. A `workflow_dispatch` run
+validates artifacts but never publishes. Verify PyPI project `turbobench-cli` and
+the GitHub Release for the same tag.
 
-```bash
-release_sha="$(git rev-list -n 1 turbobench-cli-v<version>)"
-gh run list --workflow release.yml --commit "$release_sha" --limit 5 \
-  --json databaseId,status,conclusion,event,headBranch,headSha,displayTitle,url
-gh run watch <run-id> --exit-status
-```
-
-If the commit-filtered query is briefly empty, poll recent release runs and
-select only the tag-push run for the exact SHA. A manual workflow dispatch may
-validate artifacts but must not publish unless its checked-in contract says so.
-If the run fails, inspect only failed logs with
-`gh run view <run-id> --log-failed`; do not replay the upload manually.
-
-After the workflow succeeds, wait for the exact PyPI file set and inspect the
-matching GitHub Release:
+Use the existing exact-version verifier:
 
 ```bash
 python3 .codex/skills/build-release/scripts/release_build.py \
   wait-pypi --version <version>
-gh release view turbobench-cli-v<version> --json url,tagName,assets
 ```
 
-A successful workflow is not the final success signal. Do not report completion
-until PyPI contains both `turbobench_cli-<version>-py3-none-any.whl` and
-`turbobench_cli-<version>.tar.gz`, and the GitHub Release exists for the exact
-tag.
-
-## Final response
-
-For a local candidate, lead with its artifact directory and report both files,
-digests, version, and completed gates. For publication, lead with
-`https://pypi.org/project/turbobench-cli/<version>/` and report the tag, pushed
-commit, workflow URL and conclusion, GitHub Release URL, and both distribution
-filenames. On failure, report the exact command or gate and the next safe
-recovery action.
+Require `turbobench_cli-<version>-py3-none-any.whl` and
+`turbobench_cli-<version>.tar.gz` on PyPI and the GitHub Release for the tag.

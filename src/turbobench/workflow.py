@@ -1,0 +1,560 @@
+"""Two-host comparison coordinator: immutable measurement first, local media second."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import shlex
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from turbobench.assets import discover_assets
+from turbobench.correctness import compare_replays
+from turbobench.profiles import get_profile, profile_hash, promo_action_hash
+from turbobench.proofs import finalize_proof, require_proof, validate_document
+from turbobench.runtime import harness_source_hash, prepare_runtime
+from turbobench.system import host_record
+from turbobench.util import canonical_json_hash, read_json, write_json
+
+
+def machine_identity() -> dict[str, Any]:
+    """Hash a hardware/OS installation identifier, never an SSH alias or hostname."""
+    path = Path("/etc/machine-id")
+    if path.is_file():
+        identity = path.read_text().strip()
+    elif __import__("platform").system() == "Darwin":
+        raw = subprocess.check_output(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], text=True)
+        found = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', raw)
+        identity = found.group(1) if found else ""
+    else:
+        identity = ""
+    if not identity:
+        raise RuntimeError("cannot verify a stable machine identity for host separation")
+    return {
+        "machine_sha256": hashlib.sha256(identity.encode()).hexdigest(),
+        "hardware": host_record(),
+    }
+
+
+def validate_request(request: dict[str, Any]) -> None:
+    validate_document(request)
+    if request["request_id"] != canonical_json_hash({**request, "request_id": ""}):
+        raise ValueError("request ID mismatch")
+    profile = get_profile(request["profile"])
+    contract = request["policy_contract"]
+    if contract["frame_skip"] != profile.frame_skip or contract[
+        "action_sha256"
+    ] != canonical_json_hash(request["actions"]):
+        raise ValueError("request policy cadence/actions mismatch")
+    if not request["actions"] or not request["render_machine"].get("machine_sha256"):
+        raise ValueError("request is missing actions or a rendering machine identity")
+    from turbobench.providers import load_providers, parse_provider_ref
+
+    definitions = load_providers()
+    refs = [parse_provider_ref(request[side], definitions) for side in ("left", "right")]
+    if any(ref.selector not in {"latest", "version"} for ref in refs):
+        raise ValueError(
+            "two-host showcases require package releases; host-local checkout/artifact refs are unsupported"
+        )
+    if refs[0].provider != profile.authority or not profile.compatible(
+        refs[0].provider, refs[1].provider
+    ):
+        raise ValueError(
+            "showcase requires the upstream authority on the left and a compatible candidate on the right"
+        )
+
+
+def replay_pair(
+    root: Path,
+    temporary: Path,
+    profile: Any,
+    providers: dict[str, Any],
+    actions: list[Any],
+    *,
+    record_frames: bool,
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    from turbobench.engine import _contract_attestation, _promo_replay
+
+    private, portable = discover_assets(profile)
+    stream = tuple(tuple(action) for action in actions)
+    digest = promo_action_hash(profile, stream)
+    records, paths = {}, {}
+    for side, provider in providers.items():
+        attestation = _contract_attestation(
+            root, provider, profile, 1, private, portable, side=f"showcase-{side}", frame_skip=1
+        )
+        record, path = _promo_replay(
+            root,
+            temporary,
+            provider,
+            profile,
+            stream,
+            digest,
+            private,
+            portable,
+            attestation,
+            side,
+            record_frames=record_frames,
+        )
+        if record["frame_count"] != len(actions) + 1 or len(record["transitions"]) != len(actions):
+            raise ValueError(f"{side} replay ended before the locked excerpt finished")
+        records[side], paths[side] = record, path
+    gate = compare_replays(records["left"], records["right"], profile)
+    if not gate["passed"]:
+        raise ValueError(f"policy excerpt replay mismatch: {gate['first_mismatches'][:3]}")
+    records["gate"] = gate
+    write_json(root / "verification" / "showcase-replay.json", records)
+    return records, paths
+
+
+def finalize_measurement(
+    root: Path,
+    result: dict[str, Any],
+    lock: dict[str, Any],
+    left: Any,
+    right: Any,
+    profile: Any,
+    assets: Any,
+    portable: Any,
+    options: Any,
+) -> None:
+    request = options.workflow_request
+    if request is None:
+        raise ValueError("measurement-only runs require a bound workflow request")
+    validate_request(request)
+    identity = machine_identity()
+    if identity["machine_sha256"] == request["render_machine"]["machine_sha256"]:
+        raise ValueError("benchmark and rendering must run on different machines")
+    if harness_source_hash() != request["harness_sha256"]:
+        raise ValueError("remote harness differs from the staged source")
+    write_json(root / "request.json", request)
+    write_json(root / "benchmark-machine.json", identity)
+    with tempfile.TemporaryDirectory(prefix="turbobench-replay-") as temporary:
+        replay_pair(
+            root,
+            Path(temporary),
+            profile,
+            {"left": left, "right": right},
+            request["actions"],
+            record_frames=False,
+        )
+    finalize_proof(
+        root,
+        "turbobench.benchmark-proof/v1",
+        {
+            "request_id": request["request_id"],
+            "policy_id": request["policy_id"],
+            "benchmark_machine": identity,
+            "mode": "smoke" if options.smoke else "full",
+        },
+    )
+
+
+def replay_preflight(root: Path, side: str, record: Any) -> dict[str, Any]:
+    digest = record["lifecycle"]["contract_attestation_sha256"]
+    matches = [
+        read_json(path)
+        for path in (root / "verification" / "attestations").glob(f"showcase-{side}-*.json")
+    ]
+    selected = [
+        item for item in matches if item["contract_attestation"]["attestation_sha256"] == digest
+    ]
+    if len(selected) != 1:
+        raise ValueError("replay successful preflight evidence is missing or ambiguous")
+    return selected[0]
+
+
+def verify_sampling(root: Path, request: dict[str, Any], result: Any) -> None:
+    profile = get_profile(request["profile"])
+    smoke = request["smoke"]
+    shapes = (1, 2) if smoke else profile.measurement_shapes
+    pair_count = 1 if smoke else profile.full_pairs
+    repetitions = 1 if smoke else 3
+    warmups = 0 if smoke else profile.warmup_pairs
+    expected = {
+        "mode": "smoke" if smoke else "full",
+        "pairs": pair_count,
+        "repetitions": repetitions,
+        "warmup_pairs": warmups,
+    }
+    if result.get("sampling") != expected or set(result["comparison"]["shapes"]) != set(
+        map(str, shapes)
+    ):
+        raise ValueError("measurement sampling differs from the requested mode/profile")
+    for shape in shapes:
+        directory = root / "raw" / f"shape-{shape}"
+        pairs = read_json(directory / "pairs.json")["pairs"]
+        if (
+            len(pairs) != pair_count
+            or len(list(directory.glob("pair-*.json"))) != pair_count * 2
+            or len(list(directory.glob("warmup*.json"))) != warmups * 2
+        ):
+            raise ValueError("measurement invocation count mismatch")
+        for i, pair in enumerate(pairs, 1):
+            if pair["pair"] != i or pair["order"] != ("AB" if i % 2 else "BA"):
+                raise ValueError("measurement pairing/order mismatch")
+            for side in ("left", "right"):
+                name = f"pair-{i:02d}-{side}.json"
+                invocation = read_json(directory / name)
+                if (
+                    pair[f"{side}_invocation"] != name
+                    or pair[f"{side}_sps"] != invocation["sps"]
+                    or invocation["repetitions"] != repetitions
+                    or len(invocation["sps"]) != repetitions
+                    or invocation["steps"] != profile.measurement_steps
+                    or invocation["warmup_steps"]
+                    != (0 if smoke else min(500, profile.measurement_steps))
+                ):
+                    raise ValueError("paired statistics are not bound to raw timing invocations")
+
+
+def verify_measurement_replay(root: Path, request: dict[str, Any]) -> None:
+    from turbobench.engine import _require_evidence_binding
+
+    profile = get_profile(request["profile"])
+    lock = read_json(root / "resolved-lock.json")
+    records = read_json(root / "verification" / "showcase-replay.json")
+    digest = promo_action_hash(profile, tuple(tuple(a) for a in request["actions"]))
+    for side in ("left", "right"):
+        record = records[side]
+        if (
+            record["action_stream_sha256"] != digest
+            or record["frame_count"] != len(request["actions"]) + 1
+            or len(record["frame_sha256"]) != record["frame_count"]
+            or len(record["transitions"]) != len(request["actions"])
+        ):
+            raise ValueError("remote replay action/frame commitment mismatch")
+        # Replay records bind the successful raw-cadence preflight saved with them.
+        preflight = replay_preflight(root, side, record)
+        _require_evidence_binding(
+            record, preflight["execution_spec"], preflight["contract_attestation"]
+        )
+    actual = compare_replays(records["left"], records["right"], profile)
+    if not actual["passed"] or actual != records["gate"]:
+        raise ValueError("remote replay parity gate is invalid")
+    if (
+        read_json(root / "benchmark-machine.json")["machine_sha256"]
+        == request["render_machine"]["machine_sha256"]
+    ):
+        raise ValueError("benchmark and rendering host identities are the same")
+    for side in ("left", "right"):
+        provider = lock["providers"][side]
+        from turbobench.providers import load_providers, parse_provider_ref
+
+        ref = parse_provider_ref(request[side], load_providers())
+        if provider["provider"] != ref.provider or (
+            ref.selector == "version" and provider["version"] != ref.value
+        ):
+            raise ValueError("benchmark provider differs from requested release")
+
+
+def measurement_worker(request_path: Path, output: Path) -> None:
+    from turbobench.engine import ComparisonOptions, run_comparison
+    from turbobench.providers import load_providers, parse_provider_ref
+
+    request = read_json(request_path)
+    validate_request(request)
+    if machine_identity()["machine_sha256"] == request["render_machine"]["machine_sha256"]:
+        raise ValueError("benchmark and rendering must run on different machines")
+    definitions = load_providers()
+    run_comparison(
+        request["profile"],
+        parse_provider_ref(request["left"], definitions),
+        parse_provider_ref(request["right"], definitions),
+        output,
+        ComparisonOptions(
+            smoke=request["smoke"],
+            measurement_only=True,
+            workflow_request=request,
+            python_minor=request["python_minor"],
+            progress=lambda message: print(message, flush=True),
+        ),
+    )
+
+
+def pipeline_gates(result: dict[str, Any], smoke: bool) -> None:
+    expected = (
+        {
+            "official sample design",
+            "no diagnostic overrides",
+            "system load",
+            "eligible exact artifacts",
+        }
+        if smoke
+        else set()
+    )
+    failed = [
+        g["name"]
+        for g in result["validity"]["gates"]
+        if not g["passed"] and g["name"] not in expected
+    ]
+    if failed:
+        raise ValueError("benchmark gates failed: " + ", ".join(failed))
+    if not smoke and (
+        result["claim"]["status"] != "official" or result["comparison"]["outcome"] == "inconclusive"
+    ):
+        raise ValueError("full showcase requires official, conclusive benchmark evidence")
+
+
+def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
+    from turbobench.providers import load_providers, parse_provider_ref
+    from turbobench.reporting import write_views
+    from turbobench.resolution import resolve_pair
+    from turbobench.showcase import generate_showcase_assets, scaling_chart
+
+    benchmark = require_proof(root / "benchmark")
+    policy = require_proof(root / "policy")
+    request = read_json(root / "benchmark" / "request.json")
+    identity = machine_identity()
+    if identity != request["render_machine"]:
+        raise ValueError("rendering host differs from the locked request")
+    result = read_json(root / "benchmark" / "result.json")
+    write_views(root, result)
+    chart_diagnostic = (
+        request["smoke"]
+        or result["claim"]["status"] != "official"
+        or result["comparison"]["outcome"] == "inconclusive"
+    )
+    (root / "chart.svg").write_text(scaling_chart(result, diagnostic=chart_diagnostic))
+    pipeline_gates(result, request["smoke"])
+    if policy["proof_id"] != benchmark["bindings"]["policy_id"]:
+        raise ValueError("measurement/policy binding mismatch")
+    profile = get_profile(request["profile"])
+    lock = read_json(root / "benchmark" / "resolved-lock.json")
+    definitions = load_providers()
+    refs = [
+        parse_provider_ref(
+            f"{lock['providers'][s]['provider']}@{lock['providers'][s]['version']}", definitions
+        )
+        for s in ("left", "right")
+    ]
+    resolution = resolve_pair(profile, *refs, definitions, python_minor=request["python_minor"])
+    providers = {
+        s: prepare_runtime(p, cache_context=profile_hash(profile), progress=progress)
+        for s, p in zip(("left", "right"), (resolution.left, resolution.right), strict=True)
+    }
+    for side, provider in providers.items():
+        remote = lock["providers"][side]
+        if (provider.provider, provider.version, provider.source_identity) != (
+            remote["provider"],
+            remote["version"],
+            remote["source_identity"],
+        ):
+            raise ValueError("render runtime release/source identity differs from benchmark")
+    write_json(root / "render-lock.json", {s: p.portable() for s, p in providers.items()})
+    with tempfile.TemporaryDirectory(prefix="turbobench-render-") as temporary:
+        progress("Replaying the policy excerpt on the rendering host")
+        records, paths = replay_pair(
+            root, Path(temporary), profile, providers, request["actions"], record_frames=True
+        )
+        remote_records = read_json(root / "benchmark" / "verification" / "showcase-replay.json")
+        for side in ("left", "right"):
+            if not compare_replays(records[side], remote_records[side], profile)["passed"]:
+                raise ValueError(f"{side}: cross-host replay commitments differ")
+        progress("Rendering full-resolution MP4, lossless WebP and scaling chart")
+        assets = generate_showcase_assets(
+            root, result, profile, records, paths, diagnostic=request["smoke"]
+        )
+    from copy import deepcopy
+
+    view = deepcopy(result)
+    view["promo"] = {"requested": True, "eligible": not request["smoke"], "generated": True}
+    write_views(root, view)
+    (root / "chart.svg").write_text(scaling_chart(result, diagnostic=request["smoke"]))
+    contract = policy["bindings"]["contract"]
+    with (root / "report.md").open("a") as report:
+        report.write(
+            f"\n## Policy and showcase\n\nCheckpoint: `{contract['checkpoint_sha256']}`; step {contract['checkpoint_step']}.\n\nTracking: {contract['mlflow_url']}\n\nLimitations: {contract['limitations']}\n\nExcerpt: {contract['decisions']} / {contract['total_captured_decisions']} captured decisions.\n\n"
+            + "\n".join(contract["benchmark_differences"])
+            + "\n\nPlayback illustrates shape-1 throughput with common 4x time compression; it is not a wall-clock recording.\n"
+        )
+    bindings = {
+        "benchmark_id": benchmark["proof_id"],
+        "policy_id": policy["proof_id"],
+        "render_machine": identity,
+        "render_harness_sha256": harness_source_hash(),
+        "mode": "smoke" if request["smoke"] else "full",
+        "style": "comparison-style/v1",
+        "assets": assets,
+        "pipeline_passed": True,
+    }
+    snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same policy, same actions: environment throughput comparison"></a></p>\n\n![Speedup by environment count](chart.svg)\n\n'
+    snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses seeded controls and excludes inference and task/context wrappers. Policy: {contract['mlflow_url']}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
+    (root / "README-snippet.md").write_text(snippet)
+    manifest = finalize_proof(root, "turbobench.showcase-proof/v1", bindings)
+    require_proof(root)
+    return manifest
+
+
+def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
+    benchmark = require_proof(root / "benchmark")
+    policy = require_proof(root / "policy")
+    request = read_json(root / "benchmark" / "request.json")
+    if (
+        bindings["benchmark_id"] != benchmark["proof_id"]
+        or bindings["policy_id"] != policy["proof_id"]
+        or request["policy_id"] != policy["proof_id"]
+        or request["policy_contract"] != policy["bindings"]["contract"]
+        or request["actions"] != read_json(root / "policy" / "actions.json")["actions"]
+    ):
+        raise ValueError("showcase child/request/policy binding mismatch")
+    if (
+        bindings["render_machine"] != request["render_machine"]
+        or bindings["render_machine"]["machine_sha256"]
+        == benchmark["bindings"]["benchmark_machine"]["machine_sha256"]
+    ):
+        raise ValueError("showcase host role mismatch")
+    smoke = request["smoke"]
+    result = read_json(root / "benchmark" / "result.json")
+    pipeline_gates(result, smoke)
+    if (
+        bindings["mode"] != ("smoke" if smoke else "full")
+        or bindings["pipeline_passed"] is not True
+        or bindings["style"] != "comparison-style/v1"
+    ):
+        raise ValueError("showcase mode/style/status mismatch")
+    profile = get_profile(request["profile"])
+    records = read_json(root / "verification" / "showcase-replay.json")
+    remote = read_json(root / "benchmark" / "verification" / "showcase-replay.json")
+    if not compare_replays(records["left"], records["right"], profile)["passed"]:
+        raise ValueError("render provider replay mismatch")
+    from turbobench.engine import _require_evidence_binding
+
+    render_lock = read_json(root / "render-lock.json")
+    measured_lock = read_json(root / "benchmark" / "resolved-lock.json")
+    for side in ("left", "right"):
+        if not compare_replays(records[side], remote[side], profile)["passed"]:
+            raise ValueError("render/measurement replay mismatch")
+        lhs, rhs = render_lock[side], measured_lock["providers"][side]
+        if any(lhs[k] != rhs[k] for k in ("provider", "version", "source_identity")):
+            raise ValueError("cross-platform release identity mismatch")
+        preflight = replay_preflight(root, side, records[side])
+        _require_evidence_binding(
+            records[side], preflight["execution_spec"], preflight["contract_attestation"]
+        )
+    from turbobench.showcase import scaling_chart, verify_assets
+
+    verify_assets(root, bindings["assets"], result, smoke)
+    if (root / "chart.svg").read_text() != scaling_chart(result, diagnostic=smoke):
+        raise ValueError("scaling chart is not derived from benchmark statistics")
+
+
+def _run(argv: list[str]) -> str:
+    process = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=None, check=False)
+    if process.returncode:
+        raise RuntimeError(
+            f"{argv[0]} failed with exit status {process.returncode}; partial workflow data preserved"
+        )
+    return process.stdout
+
+
+def _extract(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive) as tar:
+        for member in tar.getmembers():
+            target = destination / member.name
+            if (
+                member.issym()
+                or member.islnk()
+                or not (member.isfile() or member.isdir())
+                or not target.resolve().is_relative_to(destination.resolve())
+            ):
+                raise ValueError("unsafe remote archive entry")
+        tar.extractall(destination, filter="data")
+
+
+def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
+    if (
+        args.render_host != "local"
+        or not args.benchmark_host
+        or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@-]*", args.benchmark_host)
+    ):
+        raise ValueError("use --render-host local and a configured SSH --benchmark-host")
+    if (
+        args.quick
+        or args.promo
+        or args.steps is not None
+        or args.shapes is not None
+        or args.force_busy
+        or args.allow_dirty
+        or args.parity_receipt
+    ):
+        raise ValueError(
+            "showcases use immutable profiles; quick/promo/steps/shapes/force-busy/dirty/parity overrides are unsupported"
+        )
+    policy = require_proof(args.policy)
+    if (
+        policy["schema"] != "turbobench.policy-proof/v1"
+        or policy["bindings"]["profile"] != args.profile
+    ):
+        raise ValueError("locked policy package does not match the selected profile")
+    request = {
+        "schema": "turbobench.comparison-request/v1",
+        "request_id": "",
+        "profile": args.profile,
+        "left": args.left,
+        "right": args.right,
+        "python_minor": args.python_minor,
+        "smoke": args.smoke,
+        "policy_id": policy["proof_id"],
+        "actions": read_json(args.policy / "actions.json")["actions"],
+        "policy_contract": policy["bindings"]["contract"],
+        "render_machine": machine_identity(),
+        "harness_sha256": harness_source_hash(),
+    }
+    request["request_id"] = canonical_json_hash(request)
+    validate_request(request)
+    if output.exists():
+        raise FileExistsError(output)
+    staging = output.with_name(output.name + ".partial")
+    staging.mkdir(parents=True, exist_ok=True)
+    saved_request = staging / "request.json"
+    if saved_request.exists() and read_json(saved_request) != request:
+        raise ValueError("existing partial workflow belongs to another request")
+    write_json(saved_request, request)
+    if not (staging / "policy").exists():
+        shutil.copytree(args.policy, staging / "policy")
+    host = args.benchmark_host
+    ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host]
+    remote = f".cache/turbobench/workflows/{request['request_id']}"
+    remote_home = _run([*ssh, 'printf %s "$HOME"']).strip()
+    remote_absolute = remote_home + "/" + remote
+    progress("Staging the exact harness and request on the benchmark host")
+    _run([*ssh, f"mkdir -p {shlex.quote(remote_absolute)}"])
+    source = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="turbobench-transfer-") as temporary:
+        archive = Path(temporary) / "harness.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
+                tar.add(source / name, arcname="harness/" + name)
+            for path in (source / "src").rglob("*"):
+                if path.is_file() and "__pycache__" not in path.parts:
+                    tar.add(path, arcname="harness/" + path.relative_to(source).as_posix())
+            tar.add(saved_request, arcname="request.json")
+        _run(["scp", "-q", str(archive), f"{host}:{remote_absolute}/harness.tar.gz"])
+        _run([*ssh, f"cd {shlex.quote(remote_absolute)} && tar -xzf harness.tar.gz"])
+        if not (staging / "benchmark").exists():
+            progress("Running isolated measurements and hash-only replay on the benchmark host")
+            command = f'cd {shlex.quote(remote_absolute)}/harness && export PATH="$HOME/.local/bin:$PATH" && uv sync --frozen --no-dev && if test ! -f ../benchmark/manifest.json; then uv run --frozen --no-dev turbobench measure-request ../request.json --output ../benchmark; fi'
+            process = subprocess.Popen([*ssh, command])
+            if process.wait() != 0:
+                raise RuntimeError("remote measurement failed; rerun the same command to resume")
+            remote_archive = remote_absolute + "/benchmark.tar.gz"
+            _run(
+                [*ssh, f"cd {shlex.quote(remote_absolute)} && tar -czf benchmark.tar.gz benchmark"]
+            )
+            local_archive = Path(temporary) / "benchmark.tar.gz"
+            _run(["scp", "-q", f"{host}:{remote_archive}", str(local_archive)])
+            _extract(local_archive, staging)
+    benchmark = require_proof(staging / "benchmark")
+    if benchmark["bindings"]["request_id"] != request["request_id"]:
+        raise ValueError("downloaded proof belongs to another request")
+    progress("Remote evidence verified; generating assets locally")
+    for name in ("request.json",):
+        (staging / name).unlink()
+    render_showcase(staging, progress)
+    staging.rename(output)
+    return output
