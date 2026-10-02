@@ -120,7 +120,9 @@ def build_parser() -> argparse.ArgumentParser:
     pack = commands.add_parser(
         "policy-pack", help="lock a GradLab model, training recipe and captured policy actions"
     )
-    pack.add_argument("profile")
+    pack.add_argument(
+        "profile", nargs="?", help="comparison definition; inferred from the saved policy game"
+    )
     pack.add_argument("--model", type=Path, required=True)
     pack.add_argument("--capture", type=Path, required=True)
     pack.add_argument("--actions", type=Path, required=True)
@@ -168,10 +170,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(configure(args.benchmark_host, args.policy), indent=2))
             return 0
         if args.command == "policy-pack":
-            from turbobench.proofs import pack_policy
+            from turbobench.proofs import pack_policy, pack_policy_resolved
+
+            pack = pack_policy if args.profile in PROFILES else pack_policy_resolved
 
             print(
-                pack_policy(
+                pack(
                     args.model,
                     args.capture,
                     args.actions,

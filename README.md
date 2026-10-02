@@ -97,9 +97,11 @@ uv run --frozen turbobench compare --showcase          # full comparison
 ```
 
 Measurements run on the other machine; replay, video, animated WebP, and the
-scaling chart are generated locally. The policy package selects the workload and
-exact trained provider; output goes to a fresh directory under
-`turbobench-results/`. Follow the
+scaling chart are generated locally. Saved policy settings, declarations from
+exact provider packages, and versioned TurboBench comparison rules resolve to
+one frozen workload. Its sources, checkpoint, host roles, measurements and
+exports are bound into v2 proofs; existing v1 proofs still verify. Output goes
+to a fresh directory under `turbobench-results/`. Follow the
 [workflow guide](https://github.com/tsilva/turbobench/blob/main/docs/comparison-workflow.md)
 for policy import, assets on both hosts, extra rendering tools, and proof checks.
 

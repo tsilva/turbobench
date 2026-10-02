@@ -332,9 +332,9 @@ def verify_assets(root: Path, assets: Any, result: Any, diagnostic: bool) -> Non
             or animation.n_frames != assets["webp"]["frames"]
         ):
             raise ValueError("WebP export contract mismatch")
-    profile = __import__("turbobench.profiles", fromlist=["get_profile"]).get_profile(
-        result["profile"]["id"]
-    )
+    from turbobench.workloads import bundle_profile
+
+    profile = bundle_profile(root / "benchmark" if (root / "benchmark").exists() else root, result)
     with Image.open(root / "media/card.png") as card:
         if (
             card.convert("RGB").tobytes()

@@ -1,0 +1,43 @@
+{
+  "$id": "turbobench.environment-declaration/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actions": {
+      "type": "array"
+    },
+    "capabilities": {
+      "type": "object"
+    },
+    "lifecycle": {
+      "type": "object"
+    },
+    "observation_shape": {
+      "type": "array"
+    },
+    "preflight": {
+      "type": "object"
+    },
+    "provider": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "turbobench.environment-declaration/v1",
+      "type": "string"
+    },
+    "states": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "provider",
+    "capabilities",
+    "states",
+    "actions",
+    "preflight",
+    "observation_shape",
+    "lifecycle"
+  ],
+  "type": "object"
+}

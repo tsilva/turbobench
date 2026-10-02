@@ -1,0 +1,76 @@
+{
+  "$id": "turbobench.benchmark-proof/v2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "bindings": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_machine": {
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "smoke",
+            "full"
+          ],
+          "type": "string"
+        },
+        "policy_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "workload_sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "policy_id",
+        "benchmark_machine",
+        "mode",
+        "workload_sha256"
+      ],
+      "type": "object"
+    },
+    "proof_id": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "turbobench.benchmark-proof/v2",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "proof_id",
+    "bindings",
+    "artifacts"
+  ],
+  "type": "object"
+}

@@ -1,4 +1,5 @@
 """Normalize saved policy contracts once, independent of benchmark profiles."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,7 +61,8 @@ def read_policy(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, A
         "frame_skip": preprocessing["frame_skip"],
         "action_sha256": canonical_json_hash(actions["actions"]),
         "selection": capture["selection"],
-        "decisions": (len(actions["actions"]) - actions["reset_noop_prefix"]) // preprocessing["frame_skip"],
+        "decisions": (len(actions["actions"]) - actions["reset_noop_prefix"])
+        // preprocessing["frame_skip"],
         "total_captured_decisions": len(capture["transitions"]),
         "training_run": model["provenance"]["run_name"],
         "checkpoint_step": checkpoint["step"],
@@ -114,30 +116,66 @@ def normalize_policy(root: Path) -> dict[str, Any]:
         if type(pre.get(name)) is not int or pre[name] < 1:
             raise ValueError(f"invalid training preprocessing: {name}")
     resize = pre.get("obs_resize")
-    if not isinstance(resize, list) or len(resize) != 2 or any(type(v) is not int or v <= 0 for v in resize):
+    if (
+        not isinstance(resize, list)
+        or len(resize) != 2
+        or any(type(v) is not int or v <= 0 for v in resize)
+    ):
         raise ValueError("missing or invalid training resize")
     for name in ("obs_grayscale", "max_pool_frames"):
         if type(pre.get(name)) is not bool:
             raise ValueError(f"missing training preprocessing: {name}")
     crop = pre.get("obs_crop")
-    if not isinstance(crop, list) or len(crop) != 4 or any(type(v) is not int or v < 0 for v in crop):
+    if (
+        not isinstance(crop, list)
+        or len(crop) != 4
+        or any(type(v) is not int or v < 0 for v in crop)
+    ):
         raise ValueError("missing or invalid training crop")
-    if pre.get("obs_crop_mode") not in ("remove", "mask") or pre.get("obs_resize_algorithm") not in ("area", "nearest", "linear"):
+    if pre.get("obs_crop_mode") not in ("remove", "mask") or pre.get(
+        "obs_resize_algorithm"
+    ) not in ("area", "nearest", "linear"):
         raise ValueError("missing or unsupported training image preprocessing")
-    if pre.get("sticky_action_prob") != 0 or pre.get("obs_crop_fill") != 0 or environment["provider_args"].get("use_fire_reset") is not False:
-        raise ValueError("sticky actions, crop fill, or fire reset need an explicit supported execution adapter")
+    if (
+        pre.get("sticky_action_prob") != 0
+        or pre.get("obs_crop_fill") != 0
+        or environment["provider_args"].get("use_fire_reset") is not False
+    ):
+        raise ValueError(
+            "sticky actions, crop fill, or fire reset need an explicit supported execution adapter"
+        )
     execution = metadata.get("policy_execution_contract", {})
     base = execution.get("model_inputs", {}).get("base_observation_space", {})
     channels = pre["frame_stack"] * (1 if pre["obs_grayscale"] else 3)
-    if base.get("kind") != "box" or base.get("dtype") not in ("|u1", "uint8") or base.get("shape") != [channels, resize[1], resize[0]]:
+    if (
+        base.get("kind") != "box"
+        or base.get("dtype") not in ("|u1", "uint8")
+        or base.get("shape") != [channels, resize[1], resize[0]]
+    ):
         raise ValueError("saved policy image contract must explicitly establish CHW layout")
     table = environment["provider_args"].get("use_restricted_actions")
     capture = read_json(root / "capture.json")
-    if not isinstance(table, list) or not table or table != capture["action_contract"]["requested"]["table"]:
+    if (
+        not isinstance(table, list)
+        or not table
+        or table != capture["action_contract"]["requested"]["table"]
+    ):
         raise ValueError("saved policy action ordering differs from captured actions")
-    if any(not isinstance(row, list) or any(not isinstance(v, str) or not v for v in row) for row in table) or len({tuple(row) for row in table}) != len(table):
+    if any(
+        not isinstance(row, list) or any(not isinstance(v, str) or not v for v in row)
+        for row in table
+    ) or len({tuple(row) for row in table}) != len(table):
         raise ValueError("invalid saved policy action table")
-    result = {**summary, "schema": "turbobench.policy-contract/v1", "environment": environment, "action_contract": metadata["action_contract"], "execution_contract": execution, "training_versions": metadata.get("versions", {}), "layout": "chw"}
+    result = {
+        **summary,
+        "schema": "turbobench.policy-contract/v1",
+        "environment": environment,
+        "action_contract": metadata["action_contract"],
+        "execution_contract": execution,
+        "training_versions": metadata.get("versions", {}),
+        "layout": "chw",
+        "reset_noop_prefix": read_json(root / "actions.json")["reset_noop_prefix"],
+    }
     result["benchmark_differences"] = [
         "seeded canonical benchmark controls; policy controls used for the showcase excerpt",
         "policy inference and saved context/task/reward wrappers excluded from environment timing",

@@ -14,11 +14,12 @@ from typing import Any
 
 from turbobench.assets import discover_assets
 from turbobench.correctness import compare_replays
-from turbobench.profiles import get_profile, profile_hash, promo_action_hash
+from turbobench.profiles import profile_hash, promo_action_hash
 from turbobench.proofs import finalize_proof, require_proof, validate_document
 from turbobench.runtime import harness_source_hash, prepare_runtime
 from turbobench.system import host_record
 from turbobench.util import canonical_json_hash, read_json, write_json
+from turbobench.workloads import request_profile
 
 
 def machine_identity() -> dict[str, Any]:
@@ -44,7 +45,14 @@ def validate_request(request: dict[str, Any]) -> None:
     validate_document(request)
     if request["request_id"] != canonical_json_hash({**request, "request_id": ""}):
         raise ValueError("request ID mismatch")
-    profile = get_profile(request["profile"])
+    profile = request_profile(request)
+    if request["schema"] == "turbobench.comparison-request/v2":
+        workload = request["resolved_workload"]
+        if (
+            set(workload["declarations"]) != {"left", "right"}
+            or workload["policy_contract"] != request["policy_contract"]
+        ):
+            raise ValueError("request is missing locked provider declarations or policy contract")
     contract = request["policy_contract"]
     if contract["frame_skip"] != profile.frame_skip or contract[
         "action_sha256"
@@ -66,6 +74,16 @@ def validate_request(request: dict[str, Any]) -> None:
         raise ValueError(
             "showcase requires the upstream authority on the left and a compatible candidate on the right"
         )
+    if "resolved_workload" in request:
+        for side, ref in zip(("left", "right"), refs, strict=True):
+            provider = request["resolved_workload"]["declarations"][side]["provider"]
+            if ref.selector != "version" or (ref.provider, ref.value) != (
+                provider["provider"],
+                provider["version"],
+            ):
+                raise ValueError(
+                    "resolved workload declaration differs from pinned provider request"
+                )
 
 
 def replay_pair(
@@ -142,15 +160,19 @@ def finalize_measurement(
             request["actions"],
             record_frames=False,
         )
+    bindings = {
+        "request_id": request["request_id"],
+        "policy_id": request["policy_id"],
+        "benchmark_machine": identity,
+        "mode": "smoke" if options.smoke else "full",
+    }
+    version = 2 if "resolved_workload" in request else 1
+    if version == 2:
+        bindings["workload_sha256"] = canonical_json_hash(request["resolved_workload"])
     finalize_proof(
         root,
-        "turbobench.benchmark-proof/v1",
-        {
-            "request_id": request["request_id"],
-            "policy_id": request["policy_id"],
-            "benchmark_machine": identity,
-            "mode": "smoke" if options.smoke else "full",
-        },
+        f"turbobench.benchmark-proof/v{version}",
+        bindings,
     )
 
 
@@ -169,7 +191,7 @@ def replay_preflight(root: Path, side: str, record: Any) -> dict[str, Any]:
 
 
 def verify_sampling(root: Path, request: dict[str, Any], result: Any) -> None:
-    profile = get_profile(request["profile"])
+    profile = request_profile(request)
     smoke = request["smoke"]
     shapes = (1, 2) if smoke else profile.measurement_shapes
     pair_count = 1 if smoke else profile.full_pairs
@@ -215,8 +237,28 @@ def verify_sampling(root: Path, request: dict[str, Any], result: Any) -> None:
 def verify_measurement_replay(root: Path, request: dict[str, Any]) -> None:
     from turbobench.engine import _require_evidence_binding
 
-    profile = get_profile(request["profile"])
+    profile = request_profile(request)
     lock = read_json(root / "resolved-lock.json")
+    if profile.resolved_workload is not None:
+        from turbobench.workloads import check_declaration
+
+        for side in ("left", "right"):
+            declaration = read_json(
+                root / "verification" / "provider-declarations" / f"{side}.json"
+            )
+            check_declaration(
+                declaration,
+                profile.resolved_workload["configuration"],
+                profile.resolved_workload["definition"]["assets"],
+            )
+            if declaration["provider"] != lock["providers"][side]:
+                raise ValueError("measurement declaration differs from actual artifact lock")
+            expected = profile.resolved_workload["declarations"][side]["provider"]
+            if any(
+                declaration["provider"][k] != expected[k]
+                for k in ("provider", "version", "source_identity")
+            ):
+                raise ValueError("measurement uses a different release from resolved workload")
     records = read_json(root / "verification" / "showcase-replay.json")
     digest = promo_action_hash(profile, tuple(tuple(a) for a in request["actions"]))
     for side in ("left", "right"):
@@ -262,7 +304,7 @@ def measurement_worker(request_path: Path, output: Path) -> None:
         raise ValueError("benchmark and rendering must run on different machines")
     definitions = load_providers()
     run_comparison(
-        request["profile"],
+        request_profile(request),
         parse_provider_ref(request["left"], definitions),
         parse_provider_ref(request["right"], definitions),
         output,
@@ -323,7 +365,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     pipeline_gates(result, request["smoke"])
     if policy["proof_id"] != benchmark["bindings"]["policy_id"]:
         raise ValueError("measurement/policy binding mismatch")
-    profile = get_profile(request["profile"])
+    profile = request_profile(request)
     lock = read_json(root / "benchmark" / "resolved-lock.json")
     definitions = load_providers()
     refs = [
@@ -385,7 +427,10 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same policy, same actions: environment throughput comparison"></a></p>\n\n![Speedup by environment count](chart.svg)\n\n'
     snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses seeded controls and excludes inference and task/context wrappers. Policy: {contract['mlflow_url']}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
     (root / "README-snippet.md").write_text(snippet)
-    manifest = finalize_proof(root, "turbobench.showcase-proof/v1", bindings)
+    version = 2 if profile.resolved_workload is not None else 1
+    if version == 2:
+        bindings["workload_sha256"] = canonical_json_hash(profile.resolved_workload)
+    manifest = finalize_proof(root, f"turbobench.showcase-proof/v{version}", bindings)
     require_proof(root)
     return manifest
 
@@ -417,7 +462,11 @@ def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
         or bindings["style"] != "comparison-style/v1"
     ):
         raise ValueError("showcase mode/style/status mismatch")
-    profile = get_profile(request["profile"])
+    profile = request_profile(request)
+    if profile.resolved_workload is not None and bindings.get(
+        "workload_sha256"
+    ) != canonical_json_hash(profile.resolved_workload):
+        raise ValueError("showcase workload binding mismatch")
     records = read_json(root / "verification" / "showcase-replay.json")
     remote = read_json(root / "benchmark" / "verification" / "showcase-replay.json")
     if not compare_replays(records["left"], records["right"], profile)["passed"]:
@@ -485,18 +534,56 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
         raise ValueError(
             "showcases use immutable profiles; quick/promo/steps/shapes/force-busy/dirty/parity overrides are unsupported"
         )
+    from turbobench.proofs import migrate_policy
+    from turbobench.providers import load_providers, parse_provider_ref
+    from turbobench.resolution import resolve_pair
+    from turbobench.workloads import (
+        preliminary_workload,
+        probe_declarations,
+        profile_from_workload,
+        resolve_workload,
+    )
+
+    original = require_proof(args.policy)
+    args.policy = migrate_policy(args.policy)
     policy = require_proof(args.policy)
-    if (
-        policy["schema"] != "turbobench.policy-proof/v1"
-        or policy["bindings"]["profile"] != args.profile
-    ):
-        raise ValueError("locked policy package does not match the selected profile")
+    definition = policy["bindings"]["definition"]
+    if args.profile not in {definition, original["bindings"].get("profile")}:
+        raise ValueError("locked policy package does not match the selected comparison definition")
+    preliminary = preliminary_workload(policy["bindings"]["contract"], definition)
+    profile = profile_from_workload(preliminary)
+    progress(f"Resolving {definition} from the saved policy contract")
+    definitions = load_providers()
+    resolution = resolve_pair(
+        profile,
+        parse_provider_ref(args.left, definitions),
+        parse_provider_ref(args.right, definitions),
+        definitions,
+        python_minor=args.python_minor,
+    )
+    providers = {
+        side: prepare_runtime(provider, cache_context=profile_hash(profile), progress=progress)
+        for side, provider in zip(
+            ("left", "right"), (resolution.left, resolution.right), strict=True
+        )
+    }
+    declarations = probe_declarations(profile, providers, progress)
+    workload = resolve_workload(
+        preliminary["definition"],
+        preliminary["protocol"],
+        preliminary["policy_contract"],
+        declarations,
+    )
+    profile = profile_from_workload(workload)
+    progress(
+        f"Locked workload {profile.id}; frameskip={profile.frame_skip}, framestack={profile.frame_stack}"
+    )
     request = {
-        "schema": "turbobench.comparison-request/v1",
+        "schema": "turbobench.comparison-request/v2",
         "request_id": "",
-        "profile": args.profile,
-        "left": args.left,
-        "right": args.right,
+        "profile": profile.id,
+        "left": f"{providers['left'].provider}@{providers['left'].version}",
+        "right": f"{providers['right'].provider}@{providers['right'].version}",
         "python_minor": args.python_minor,
         "smoke": args.smoke,
         "policy_id": policy["proof_id"],
@@ -504,6 +591,7 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
         "policy_contract": policy["bindings"]["contract"],
         "render_machine": machine_identity(),
         "harness_sha256": harness_source_hash(),
+        "resolved_workload": workload,
     }
     request["request_id"] = canonical_json_hash(request)
     validate_request(request)

@@ -1,6 +1,7 @@
 # Deduplicate workload definitions
 
-Status: proposed implementation plan. No execution behavior changes in this task.
+Status: implemented for the policy-backed comparison workflow; verification
+results are recorded below. Canonical parity profiles remain unchanged.
 
 ## Goal and ownership
 
@@ -147,13 +148,31 @@ Policy-derived comparison workloads need an explicit distinction from those
 canonical profiles; do not silently reinterpret the existing requirement that
 canonical parity profiles pin their exact workload.
 
-Propose this exact addition under Comparisons in root `SPECS.md` for approval:
+The user approved this addition under Comparisons in root `SPECS.md`:
 
 > Resolve policy-backed comparison workloads in turbobench from exact provider
 > declarations, saved policy contracts, and turbobench-owned comparison rules;
 > preserve one authoritative source for each setting and freeze the complete
 > resolved workload and its source identities into portable evidence.
 
-Do not edit `SPECS.md` until this exact addition is explicitly approved. New
-schema and migration details belong in scoped design documentation, not root
-stakeholder requirements. No existing published profile or schema is rewritten.
+This requirement is now in `SPECS.md`. Schema and migration details remain in
+scoped design documentation. No existing published profile or schema is rewritten.
+
+## Implementation verification (2026-10-02)
+
+- The suite passes 168 tests; seven asset-dependent opt-in acceptance tests remain
+  skipped. Regression coverage includes changed cadence/resize/stack recipes, a
+  non-Atari definition, large ordered action tables, declaration/artifact/asset
+  substitution, source reconstruction, v2 proof dispatch, and preserved resume
+  failures. Lint and patch whitespace checks pass.
+- A real two-host smoke measures n_envs=1,2 on the configured benchmark host and
+  renders locally. It archives actual platform declarations, exact replay hashes,
+  the checkpoint/recipe/capture, and v2 benchmark/showcase proofs with full-size
+  MP4, lossless WebP, poster, and scaling chart. It is diagnostic evidence only.
+- Existing v1 FirstWall showcase evidence still verifies. The original policy
+  package remains intact; local defaults select its verified migrated sibling.
+- Canonical state digests remain independent comparison commitments. Dynamic
+  workload IDs cannot bypass them or select an ambient noncanonical Start state.
+- The official full comparison has not been run as part of this migration. Other
+  live games can adopt definitions/adapters incrementally; the non-Atari fixture
+  demonstrates shared resolution, not a completed live-game integration.
