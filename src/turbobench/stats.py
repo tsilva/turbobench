@@ -41,8 +41,10 @@ def bootstrap_median_ci(
 
 
 def paired_statistics(
-    pairs: Sequence[dict[str, object]], *, require_official_design: bool = True
+    pairs: Sequence[dict[str, object]], *, require_official_design: bool = True, smoke: bool = False
 ) -> dict[str, object]:
+    if smoke and (require_official_design or len(pairs) != 1):
+        raise ValueError("smoke requires exactly one pair and no official design")
     if require_official_design and len(pairs) != 7:
         raise ValueError("official measurements require exactly seven paired invocations")
     if not pairs:
@@ -51,16 +53,22 @@ def paired_statistics(
     left_medians: list[float] = []
     right_medians: list[float] = []
     for pair in pairs:
-        left = invocation_median(pair["left_sps"])
-        right = invocation_median(pair["right_sps"])
+        if smoke:
+            values = [pair[side] for side in ("left_sps", "right_sps")]
+            if any(len(v) != 1 or not math.isfinite(v[0]) or v[0] <= 0 for v in values):
+                raise ValueError("smoke requires one finite positive repetition per provider")
+            left, right = float(values[0][0]), float(values[1][0])
+        else:
+            left = invocation_median(pair["left_sps"])
+            right = invocation_median(pair["right_sps"])
         left_medians.append(left)
         right_medians.append(right)
         ratios.append(left / right)
     median_ratio = float(statistics.median(ratios))
-    lower, upper = bootstrap_median_ci(ratios)
-    if median_ratio >= 1.03 and lower > 1.0:
+    lower, upper = (1.0, 1.0) if smoke else bootstrap_median_ci(ratios)
+    if not smoke and median_ratio >= 1.03 and lower > 1.0:
         outcome = "left_faster"
-    elif median_ratio <= 1.0 / 1.03 and upper < 1.0:
+    elif not smoke and median_ratio <= 1.0 / 1.03 and upper < 1.0:
         outcome = "right_faster"
     else:
         outcome = "inconclusive"
@@ -69,7 +77,9 @@ def paired_statistics(
         "right_invocation_median_sps": right_medians,
         "paired_ratios_left_over_right": ratios,
         "median_paired_ratio_left_over_right": median_ratio,
-        "bootstrap": {
+        "bootstrap": None
+        if smoke
+        else {
             "method": "paired median, deterministic percentile bootstrap",
             "resamples": BOOTSTRAP_RESAMPLES,
             "seed": BOOTSTRAP_SEED,
@@ -84,7 +94,7 @@ def paired_statistics(
 
 def reciprocal_statistics(stats: dict[str, object]) -> dict[str, object]:
     ratios = [1.0 / float(value) for value in stats["paired_ratios_left_over_right"]]
-    lower, upper = bootstrap_median_ci(ratios)
+    lower, upper = (1.0, 1.0) if stats["bootstrap"] is None else bootstrap_median_ci(ratios)
     median_ratio = float(statistics.median(ratios))
     outcome = stats["outcome"]
     reversed_outcome = {
@@ -97,7 +107,9 @@ def reciprocal_statistics(stats: dict[str, object]) -> dict[str, object]:
         "right_invocation_median_sps": list(stats["left_invocation_median_sps"]),
         "paired_ratios_left_over_right": ratios,
         "median_paired_ratio_left_over_right": median_ratio,
-        "bootstrap": {
+        "bootstrap": None
+        if stats["bootstrap"] is None
+        else {
             "method": "paired median, deterministic percentile bootstrap",
             "resamples": BOOTSTRAP_RESAMPLES,
             "seed": BOOTSTRAP_SEED,

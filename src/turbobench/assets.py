@@ -22,6 +22,9 @@ STATE_SHA256: dict[str, dict[str, str]] = {
     "breakout/start-v1": {
         "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
     },
+    "breakout/firstwall-policy-v1": {
+        "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
+    },
 }
 
 
@@ -133,6 +136,7 @@ def _find_game_dirs(profile: Profile) -> list[Path]:
             roots.append(Path(value).expanduser())
     roots.extend(
         (
+            Path.home() / ".local" / "share" / "turbobench" / "assets",
             Path.home() / "roms" / "stable_retro" / "data" / "stable",
             Path.home() / "roms" / "stable-retro" / "data" / "stable",
             Path(__file__).resolve().parents[3]

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "turbobench.showcase-proof/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "proof_id",
+    "bindings",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "turbobench.showcase-proof/v1"
+    },
+    "proof_id": {
+      "type": "string"
+    },
+    "bindings": {
+      "type": "object",
+      "required": [
+        "benchmark_id",
+        "policy_id",
+        "render_machine",
+        "render_harness_sha256",
+        "mode",
+        "style",
+        "assets",
+        "pipeline_passed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_id": {
+          "type": "string"
+        },
+        "policy_id": {
+          "type": "string"
+        },
+        "render_machine": {
+          "type": "object"
+        },
+        "render_harness_sha256": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "smoke",
+            "full"
+          ]
+        },
+        "style": {
+          "type": "string"
+        },
+        "assets": {
+          "type": "object"
+        },
+        "pipeline_passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

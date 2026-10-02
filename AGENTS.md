@@ -11,3 +11,17 @@ Before every task in this repository, use the `$specs-author` skill to read the 
 ## Release Builds
 
 Use `$build-release` whenever asked to build, cut, publish, monitor, or verify a turbobench release.
+
+## Comparison Media
+
+Before creating or refreshing comparison media for any environment, read
+`docs/comparison-media.md` and follow its user-approved style and constraints.
+Use `.codex/skills/comparison-showcase/SKILL.md` for benchmark-backed comparison
+showcases. Executable workflow documentation is in `docs/comparison-workflow.md`.
+
+## Shared release procedure
+
+The project `build-release` skill composes `$release-workflow` from
+`/Users/tsilva/.codex/skills/release-workflow/SKILL.md`.
+Read both for release work; keep project commands, version policy, artifact
+requirements, and approval gates in the project adapter.

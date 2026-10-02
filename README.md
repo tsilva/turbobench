@@ -1,33 +1,43 @@
-<div align="center">
-  <img src="./logo.png" alt="turbobench" width="360" />
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tsilva/turbobench/main/logo.png" alt="turbobench logo" width="360" />
+  <br />
+  <!-- repo-tagline:start -->
+  <strong>⚖️ Matched environments, measured fairly ⚖️</strong>
+  <!-- repo-tagline:end -->
+</p>
 
-  **⚖️ Matched environments. Measured fairly. ⚖️**
-</div>
+<p align="center">
+  <a href="https://github.com/tsilva/turbobench/actions/workflows/ci.yml"><img src="https://github.com/tsilva/turbobench/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main" /></a>
+  <a href="https://pypi.org/project/turbobench-cli/"><img src="https://img.shields.io/pypi/v/turbobench-cli" alt="Published PyPI version" /></a>
+  <a href="https://github.com/tsilva/turbobench/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue" alt="Python 3.11 or newer" /></a>
+  <a href="https://github.com/tsilva/turbobench/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/turbobench-cli" alt="MIT license" /></a>
+</p>
 
-`turbobench` is a local Python CLI for reinforcement-learning environment authors,
-researchers, and provider maintainers who need fair performance comparisons between
-compatible implementations and standardized cross-provider parity checks. Each immutable
-workload profile contains both its performance settings and its parity contract, so the same
-profile ID drives both operations. Runs produce portable, self-verifying evidence.
+`turbobench` is a Python command-line tool for reinforcement-learning environment
+authors, researchers, and provider maintainers. It checks whether compatible
+implementations behave the same and measures their performance under matched
+workloads. Use it to test a provider during development or compare exact releases.
 
-Optional comparison videos replay the same locked providers and semantic action trajectory.
-Only valid, conclusive evidence can produce unmarked promotional media; diagnostic output is
-clearly watermarked.
+Results stay local in portable bundles with recorded versions, hashes, and
+verification evidence. Optional comparison videos replay the same actions in both
+providers; diagnostic videos are visibly watermarked.
 
 ## Install
 
-Install [turbobench-cli 2.0.6](https://pypi.org/project/turbobench-cli/2.0.6/)
-from PyPI:
+Requires Python 3.11+, `uv`, FFmpeg, and FFprobe. Isolated provider environments
+default to CPython 3.14.
+
+Install [turbobench-cli 2.0.7](https://pypi.org/project/turbobench-cli/2.0.7/):
 
 ```bash
-uv tool install turbobench-cli==2.0.6
+uv tool install turbobench-cli==2.0.7
 ```
 
 Alternatively, install it in an active virtual environment with
-`python -m pip install turbobench-cli==2.0.6`. The installed command and Python
+`python -m pip install turbobench-cli==2.0.7`. The installed command and Python
 import remain `turbobench`.
 
-For a development checkout:
+For development and the new two-host showcase workflow, use the checkout:
 
 ```bash
 git clone https://github.com/tsilva/turbobench.git
@@ -36,112 +46,86 @@ uv sync --frozen --group dev
 ```
 
 Run `turbobench profiles list` and `turbobench providers list` to choose a
-compatible profile and provider pair. Prefix CLI commands with `uv run` when
-working from a development checkout.
+compatible workload and provider pair. In a checkout, prefix commands with
+`uv run --frozen`.
 
 ## Commands
 
 ```bash
-turbobench doctor vizdoom/basic-v1       # check the host, tools, and profile assets
-turbobench profiles list                 # list immutable workloads
-turbobench providers list                # list built-in and registered providers
+turbobench profiles list               # list immutable workloads
+turbobench providers list              # list available provider adapters
+turbobench doctor vizdoom/basic-v1     # check the host, tools, and assets
 
-turbobench parity supermario/world1-v1 \
-  --candidate env-supermariobrosnes-turbo-emu@checkout:/absolute/path/to/repo \
-  --allow-dirty --quick                         # test current work diagnostically
-
+# Check behavior without benchmarking; quick runs are diagnostic.
 turbobench parity vizdoom/basic-v1 \
-  --candidate env-vizdoom-turbo@artifact:/absolute/path/to/final.whl \
-  --output turbobench-parity/vizdoom            # certify the exact final wheel
+  --candidate env-vizdoom-turbo@1.3.0.post27 --quick \
+  --output turbobench-results/parity-vizdoom
+turbobench verify-parity turbobench-results/parity-vizdoom
 
-turbobench verify-parity turbobench-parity/vizdoom --require-canonical
-
+# Measure a matched provider pair.
 turbobench compare vizdoom/basic-v1 \
   --left env-vizdoom-turbo@1.3.0.post27 \
   --right vizdoom@1.3.0 \
-  --output turbobench-results/vizdoom            # create a result bundle
-
-turbobench compare breakout/start-v1 \
-  --left env-breakoutatari2600-turbo-native@VERSION \
-  --right stable-retro@1.0.1 \
-  --output turbobench-results/breakout-vs-stable-retro
-
-turbobench compare breakout/start-v1 \
-  --left env-breakoutatari2600-turbo-native@VERSION \
-  --right env-stableretro-turbo@VERSION \
-  --output turbobench-results/breakout-vs-stable-retro-turbo
-
-# Add one receipt for an authority/candidate pair, or two receipts against the
-# same authority to reuse transitive Turbo-versus-Turbo correctness evidence.
-turbobench compare breakout/start-v1 \
-  --left env-breakoutatari2600-turbo-native@VERSION \
-  --right env-stableretro-turbo@VERSION \
-  --parity-receipt /external/evidence/native-receipt \
-  --parity-receipt /external/evidence/stable-retro-turbo-receipt
+  --output turbobench-results/vizdoom
 
 turbobench verify turbobench-results/vizdoom  # verify integrity and consistency
 turbobench report turbobench-results/vizdoom  # print the generated report
 turbobench promo turbobench-results/vizdoom --diagnostic
 
-uv run --frozen ruff check .                    # lint the project
-uv run --frozen pytest -m "not acceptance"      # run tests without proprietary assets
+uv run --frozen ruff check .                   # lint a checkout
+uv run --frozen pytest -m "not acceptance"     # test without proprietary assets
 ```
 
-Long-running commands write progress to standard error and reserve standard output for their
-final machine-readable JSON.
+See the [usage guide](https://github.com/tsilva/turbobench/blob/main/docs/usage.md)
+for provider selectors, Breakout comparisons, evidence reuse, and measurement
+details. The [parity guide](https://github.com/tsilva/turbobench/blob/main/docs/parity.md)
+covers dirty-checkout diagnostics and certification of an exact final wheel.
+
+## Two-host showcases
+
+Available in the development checkout; the published 2.0.7 CLI does not include
+these commands. Run from the render machine, replacing the example SSH host and
+policy path with your own:
+
+```bash
+uv run --frozen turbobench configure \
+  --benchmark-host benchmark.example.com \
+  --policy /path/to/verified-policy-package
+
+uv run --frozen turbobench compare --showcase --smoke  # diagnostic end-to-end check
+uv run --frozen turbobench compare --showcase          # full comparison
+```
+
+Measurements run on the other machine; replay, video, animated WebP, and the
+scaling chart are generated locally. The policy package selects the workload and
+exact trained provider; output goes to a fresh directory under
+`turbobench-results/`. Follow the
+[workflow guide](https://github.com/tsilva/turbobench/blob/main/docs/comparison-workflow.md)
+for policy import, assets on both hosts, extra rendering tools, and proof checks.
 
 ## Notes
 
-- The controller supports Python 3.11 and newer. Provider runtimes default to CPython 3.14.
-  `uv`, FFmpeg, and FFprobe are required.
-- Current workload profiles are `supermario/world1-v1`, `breakout/start-v1`,
-  and `vizdoom/basic-v1`. The same ID is used with `compare` and `parity`.
-  `compare --quick` performs selected-pair correctness and two shape-1 timing pairs.
-  Full `compare` starts with those same two shape-1 pairs, continues to seven pairs,
-  and then measures shapes 16 and 32. It records the first two pairs as light statistics.
-- Provider references accept `provider`, `provider@latest`, `provider@VERSION`,
-  `provider@artifact:/absolute/path.whl`, and `provider@checkout:/absolute/path`.
-  `latest` excludes prereleases, yanked releases,
-  incompatible artifacts, and releases still inside the seven-day quarantine.
-- Set `TURBOBENCH_ROM_PATH`, `TURBOBENCH_ASSET_ROOT`, or `RETRO_DATA_PATH` to locate required
-  local game payloads. ROMs and local paths are never written to portable bundles; only
-  canonical digests are recorded.
-- The `breakout/start-v1` profile compares the Atari 2600 Breakout `Start`
-  workload against either original Stable Retro or Stable Retro Turbo. Replace
-  `VERSION` with an exact release, use `@latest`, or select a clean checkout
-  with `@checkout:/absolute/path`.
-- Every official result must pass provider compatibility, matched correctness, system-load,
-  alternating paired-measurement, statistical uncertainty, provenance, and asset gates.
-  Quick runs and explicit overrides remain diagnostic.
-- Exact release parity accepts only the final local wheel on the chosen canonical host.
-  Checkout snapshots include tracked edits and nonignored untracked source, so developers
-  do not need to commit before running a quick diagnostic check.
-- Comparisons validate only their selected pair and never prepare an original authority
-  unless that authority is itself selected. Compatible parity receipts may replace matching
-  correctness shapes; missing shapes are checked directly during the comparison.
-- Every distinct provider configuration and vector shape is preflighted in a consuming,
-  phase-isolated subprocess against the normative
-  [Turbo Vector API v2 contract](docs/TURBO_VECTOR_API_V2.md). Successful attestations are
-  bound to exact portable execution-spec fingerprints; trace, warmup, timing, reset, and
-  replay each use fresh processes and environments that never run dynamic contract validation.
-  Providers that do not declare a conforming Turbo Vector API v2 contract stop before
-  construction and dependent workloads.
-- Published TurboBench releases 1.0.3 through 2.0.6 ran mutable Turbo API validation inside
-  workload processes.
-  Bundles from those versions may remain structurally intact, but their performance evidence is
-  potentially contaminated when a contract operation enables persistent provider state. Rerun
-  those comparisons with the phase-isolated protocol before using them to support performance
-  claims.
-- Result bundles contain the exact provider lock, shape-local statistics, report, chart, raw
-  evidence, verification records, and optional media. `manifest.json` binds every portable
-  file by size and SHA-256; turbobench does not upload or publish bundles.
-- Official v1 hosts are Apple-silicon macOS and x86-64 Linux. Third-party providers can
-  register through the `turbobench.providers` entry-point group.
+- Official comparisons require compatible providers, matched correctness, paired
+  timing, uncertainty estimates, provenance, asset validation, and acceptable
+  system load. Quick runs and overrides remain diagnostic.
+- Supply lawful game assets locally through `TURBOBENCH_ROM_PATH`,
+  `TURBOBENCH_ASSET_ROOT`, or `RETRO_DATA_PATH`. ROMs and their local paths stay
+  out of portable evidence.
+- Official v1 hosts are Apple-silicon macOS and x86-64 Linux. Third-party
+  adapters register through the `turbobench.providers` entry-point group.
+- Long-running commands send progress to standard error and final
+  machine-readable JSON to standard output. Bundles are not uploaded or published.
+- **Rerun performance claims from versions 1.0.3–2.0.6.** Those releases ran
+  mutable API validation inside workload processes, which could contaminate
+  timing. Version 2.0.7 isolates validation from measured workloads; see the
+  [usage guide](https://github.com/tsilva/turbobench/blob/main/docs/usage.md#measurement-and-validity).
 
 ## Architecture
 
-![turbobench architecture](./architecture.png)
+The core matched-comparison pipeline:
+
+![turbobench matched-comparison architecture](https://raw.githubusercontent.com/tsilva/turbobench/main/architecture.png)
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/tsilva/turbobench/blob/main/LICENSE)

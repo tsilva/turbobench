@@ -31,13 +31,16 @@ def render_report(result: dict[str, Any]) -> str:
     ]
     for shape, payload in sorted(comparison["shapes"].items(), key=lambda item: int(item[0])):
         stats = payload["statistics"]
-        lower, upper = stats["bootstrap"]["ci"]
+        lower, upper = stats["bootstrap"]["ci"] if stats["bootstrap"] else (0.0, 0.0)
+        ci = f"[{lower:.4f}, {upper:.4f}]" if stats["bootstrap"] else "unavailable (smoke)"
         lines.append(
             f"| {shape} | {stats['median_left_sps']:,.1f} | {stats['median_right_sps']:,.1f} | "
-            f"{stats['median_paired_ratio_left_over_right']:.4f}× | [{lower:.4f}, {upper:.4f}] | "  # noqa: RUF001
+            f"{stats['median_paired_ratio_left_over_right']:.4f}× | {ci} | "  # noqa: RUF001
             f"{stats['outcome']} |"
         )
-    lines.extend(("", "No SPS values are aggregated across shapes. Shape 1 is the promo basis.", ""))
+    lines.extend(
+        ("", "No SPS values are aggregated across shapes. Shape 1 is the promo basis.", "")
+    )
     lines.extend(("## Validity gates", ""))
     for gate in result["validity"]["gates"]:
         mark = "PASS" if gate["passed"] else "FAIL"
@@ -60,13 +63,24 @@ def render_report(result: dict[str, Any]) -> str:
             "",
         )
     )
+    if result.get("sampling", {}).get("mode") == "smoke":
+        lines.extend(
+            (
+                "",
+                "SMOKE / DIAGNOSTIC: one pair per shape, one timed repetition per provider, zero warmups. No CI or significance claim.",
+                "",
+            )
+        )
     return "\n".join(lines)
 
 
 def render_chart(result: dict[str, Any]) -> str:
     shapes = sorted(result["comparison"]["shapes"].items(), key=lambda item: int(item[0]))
     maximum = max(
-        max(float(item[1]["statistics"]["median_left_sps"]), float(item[1]["statistics"]["median_right_sps"]))
+        max(
+            float(item[1]["statistics"]["median_left_sps"]),
+            float(item[1]["statistics"]["median_right_sps"]),
+        )
         for item in shapes
     )
     width, height = 960, 140 + len(shapes) * 115

@@ -30,12 +30,13 @@ def test_workload_profiles_are_unified_and_complete() -> None:
     assert set(PROFILES) == {
         "supermario/world1-v1",
         "breakout/start-v1",
+        "breakout/firstwall-policy-v1",
         "vizdoom/basic-v1",
     }
     for profile in PROFILES.values():
         assert profile.measurement_shapes == (1, 16, 32)
         assert profile.parity_shapes == (1, 4)
-        assert profile.frame_skip == 4
+        assert profile.frame_skip == (2 if profile.id == "breakout/firstwall-policy-v1" else 4)
         assert profile.frame_stack == 4
         assert profile.resize == (84, 84)
         assert profile.grayscale

@@ -38,15 +38,34 @@ def build_parser() -> argparse.ArgumentParser:
     profiles_commands = profiles.add_subparsers(dest="profiles_command", required=True)
     profiles_commands.add_parser("list")
 
+    configure = commands.add_parser("configure", help="save local showcase defaults once")
+    configure.add_argument("--benchmark-host", help="default SSH benchmark host")
+    configure.add_argument("--policy", type=Path, help="default verified policy package")
+
     compare = commands.add_parser("compare", help="run a correctness-gated paired comparison")
-    compare.add_argument("profile")
-    compare.add_argument("--left", required=True, metavar="PROVIDER_REF")
-    compare.add_argument("--right", required=True, metavar="PROVIDER_REF")
+    compare.add_argument("profile", nargs="?", help="profile ID; inferred from showcase policy")
+    compare.add_argument("--left", metavar="PROVIDER_REF", help="defaults to profile authority")
+    compare.add_argument(
+        "--right",
+        metavar="PROVIDER_REF",
+        help="defaults to policy training provider/version, or the sole profile candidate",
+    )
     compare.add_argument("--promo", action="store_true")
+    compare.add_argument(
+        "--smoke", action="store_true", help="one pair at n_envs=1,2; no warmups or CI"
+    )
+    compare.add_argument(
+        "--showcase", action="store_true", help="two-host policy-backed proof and showcase workflow"
+    )
+    compare.add_argument("--policy", type=Path, help="verified policy-pack directory")
+    compare.add_argument("--benchmark-host", help="SSH host for isolated measurements")
+    compare.add_argument("--render-host", default="local", choices=["local"])
     compare.add_argument("--output", type=Path)
     compare.add_argument("--quick", action="store_true", help="diagnostic short workload")
     compare.add_argument("--force-busy", action="store_true", help="diagnostic load override")
-    compare.add_argument("--allow-dirty", action="store_true", help="diagnostic dirty-checkout override")
+    compare.add_argument(
+        "--allow-dirty", action="store_true", help="diagnostic dirty-checkout override"
+    )
     compare.add_argument("--python", default="3.14", dest="python_minor")
     compare.add_argument("--steps", type=int, help="diagnostic workload step override")
     compare.add_argument("--shapes", type=_shapes, help="diagnostic comma-separated shape override")
@@ -80,9 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify", help="verify bundle integrity and consistency")
     verify.add_argument("bundle", type=Path)
 
-    verify_parity = commands.add_parser(
-        "verify-parity", help="verify a portable parity receipt"
-    )
+    verify_parity = commands.add_parser("verify-parity", help="verify a portable parity receipt")
     verify_parity.add_argument("receipt", type=Path)
     verify_parity.add_argument(
         "--require-canonical",
@@ -100,6 +117,25 @@ def build_parser() -> argparse.ArgumentParser:
     promo = commands.add_parser("promo", help="replay locked providers and generate bound media")
     promo.add_argument("bundle", type=Path)
     promo.add_argument("--diagnostic", action="store_true")
+    pack = commands.add_parser(
+        "policy-pack", help="lock a GradLab model, training recipe and captured policy actions"
+    )
+    pack.add_argument("profile")
+    pack.add_argument("--model", type=Path, required=True)
+    pack.add_argument("--capture", type=Path, required=True)
+    pack.add_argument("--actions", type=Path, required=True)
+    pack.add_argument("--mlflow-url", required=True)
+    pack.add_argument(
+        "--limitations",
+        required=True,
+        help="episode/excerpt selection and known parity limitations",
+    )
+    pack.add_argument("--output", type=Path, required=True)
+    worker = commands.add_parser(
+        "measure-request", help="execute a staged two-host measurement request"
+    )
+    worker.add_argument("request", type=Path)
+    worker.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -125,6 +161,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "profiles":
             _profiles_list()
+            return 0
+        if args.command == "configure":
+            from turbobench.defaults import configure
+
+            print(json.dumps(configure(args.benchmark_host, args.policy), indent=2))
+            return 0
+        if args.command == "policy-pack":
+            from turbobench.proofs import pack_policy
+
+            print(
+                pack_policy(
+                    args.model,
+                    args.capture,
+                    args.actions,
+                    args.output,
+                    args.profile,
+                    args.mlflow_url,
+                    args.limitations,
+                )
+            )
+            return 0
+        if args.command == "measure-request":
+            from turbobench.workflow import measurement_worker
+
+            measurement_worker(args.request, args.output)
             return 0
         if args.command == "compare":
             return _compare(args, arguments)
@@ -154,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:
                 diagnostic=args.diagnostic,
                 progress=_print_progress,
             )
-            print(json.dumps({"bundle": str(args.bundle.resolve()), "promo": result["promo"]}, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {"bundle": str(args.bundle.resolve()), "promo": result["promo"]},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
     except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as exc:
         parser.exit(2, f"turbobench: error: {exc}\n")
@@ -205,6 +272,31 @@ def _profiles_list() -> None:
 
 
 def _compare(args: argparse.Namespace, command: list[str]) -> int:
+    from turbobench.defaults import apply_comparison_defaults
+
+    apply_comparison_defaults(args)
+    if args.showcase:
+        from turbobench.workflow import run_workflow
+
+        output = args.output or _default_output(args.profile)
+        _print_progress(f"Showcase: {args.profile}; {args.left} vs {args.right}")
+        _print_progress(
+            f"Policy: {args.policy}; benchmark: {args.benchmark_host}; render: local; output: {output}"
+        )
+        bundle = run_workflow(args, output, _print_progress)
+        print(
+            json.dumps(
+                {
+                    "bundle": str(bundle.resolve()),
+                    "pipeline_passed": True,
+                    "mode": "smoke" if args.smoke else "full",
+                },
+                indent=2,
+            )
+        )
+        return 0
+    if args.policy or args.benchmark_host:
+        raise ValueError("--policy and --benchmark-host require --showcase")
     definitions = load_providers()
     left = parse_provider_ref(args.left, definitions)
     right = parse_provider_ref(args.right, definitions)
@@ -212,6 +304,7 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
     options = ComparisonOptions(
         promo=args.promo,
         quick=args.quick,
+        smoke=args.smoke,
         force_busy=args.force_busy,
         allow_dirty=args.allow_dirty,
         python_minor=args.python_minor,
@@ -275,7 +368,7 @@ def _parity(args: argparse.Namespace, command: list[str]) -> int:
 
 
 def _default_output(profile_id: str) -> Path:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     slug = profile_id.replace("/", "-")
     return Path("turbobench-results") / f"{stamp}-{slug}"
 

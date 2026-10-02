@@ -31,6 +31,12 @@ turbobench gives reinforcement-learning environment authors and users a provider
 - Allow a fully gated result from any host to be an official claim, while keeping failed or overridden runs clearly diagnostic and non-promotable.
 - Produce portable, self-verifying result bundles without uploading or publishing them in the initial release.
 
+- Provide one comparison workflow that produces portable benchmark evidence, a policy-backed `n_envs=1` comparison video, and a speedup chart across the profile's declared environment counts.
+- Performance measurements must run on a different machine from showcase asset generation, with both host roles bound into the portable evidence.
+- Policy-backed comparison evidence must lock the exact checkpoint and saved training configuration; playback must match that training contract, and deliberate benchmark workload differences must be disclosed.
+- Proof packages must use versioned, machine-verifiable schemas that bind benchmark evidence, policy provenance, replay evidence, and every derived showcase asset.
+- Resolve policy-backed comparison workloads in turbobench from exact provider declarations, saved policy contracts, and turbobench-owned comparison rules; preserve one authoritative source for each setting and freeze the complete resolved workload and its source identities into portable evidence.
+
 ### Promotional media
 
 - Generate comparison videos only from a valid matched benchmark and an exact provider-pair replay of one canonical semantic action trajectory.

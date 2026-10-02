@@ -103,6 +103,14 @@ def verify_bundle(bundle: Path) -> dict[str, Any]:
             "errors": [f"manifest.json is unreadable: {exc}"],
             "warnings": warnings,
         }
+    if manifest.get("schema") in {
+        "turbobench.benchmark-proof/v1",
+        "turbobench.policy-proof/v1",
+        "turbobench.showcase-proof/v1",
+    }:
+        from turbobench.proofs import verify_proof
+
+        return verify_proof(root)
     if manifest.get("schema") != "turbobench.manifest/v1":
         errors.append("unsupported manifest schema")
     expected_id = canonical_json_hash({**manifest, "bundle_id": ""})
@@ -164,9 +172,17 @@ def _verify_consistency(
         errors.append(f"result or lock is unreadable: {exc}")
         return
     result_schema = result.get("schema")
-    if result_schema != RESULT_SCHEMA:
+    if result_schema not in {RESULT_SCHEMA, "turbobench.result/v3"}:
         errors.append("unsupported result schema")
         return
+    smoke = result_schema == "turbobench.result/v3"
+    if smoke and (
+        result.get("sampling") != {"mode": "smoke", "pairs": 1, "repetitions": 1, "warmup_pairs": 0}
+        or set(result.get("comparison", {}).get("shapes", {})) != {"1", "2"}
+        or result.get("claim", {}).get("status") != "diagnostic"
+        or result.get("promo", {}).get("eligible")
+    ):
+        errors.append("smoke sampling, shape, or claim contract mismatch")
     phase_isolated = result.get("execution_protocol") == EXECUTION_PROTOCOL
     if not phase_isolated:
         warnings.append(
@@ -292,9 +308,7 @@ def _verify_consistency(
             validation_steps = int(action_record.get("validation_steps", 0))
             measurement_steps = int(action_record.get("measurement_steps", 0))
             seed = int(action_record.get("seed"))
-            validation_actions = canonical_actions(
-                profile, int(shape), validation_steps, seed=seed
-            )
+            validation_actions = canonical_actions(profile, int(shape), validation_steps, seed=seed)
             measurement_actions = canonical_actions(
                 profile, int(shape), measurement_steps, seed=seed
             )
@@ -310,15 +324,30 @@ def _verify_consistency(
                 != action_stream_hash(profile, validation_actions)
                 or action_record.get("measurement_sha256")
                 != action_stream_hash(profile, measurement_actions)
-                or raw_pairs.get("action_stream_sha256")
-                != action_record.get("measurement_sha256")
+                or raw_pairs.get("action_stream_sha256") != action_record.get("measurement_sha256")
             ):
                 errors.append(f"shape {shape} action record is inconsistent")
         expected = paired_statistics(
             pairs,
             require_official_design=len(pairs) == 7,
+            smoke=smoke,
         )
         actual = shape_result.get("statistics", {})
+        if actual != expected:
+            errors.append(f"shape {shape} complete statistics mismatch")
+        if smoke:
+            shape_directory = root / "raw" / f"shape-{shape}"
+            if list(shape_directory.glob("warmup*.json")):
+                errors.append(f"shape {shape} smoke has warmup invocations")
+            for side in ("left", "right"):
+                invocation = read_json(shape_directory / f"pair-01-{side}.json")
+                if (
+                    invocation.get("repetitions") != 1
+                    or invocation.get("warmup_steps") != 0
+                    or invocation.get("smoke") is not True
+                    or invocation.get("sps") != pairs[0][f"{side}_sps"]
+                ):
+                    errors.append(f"shape {shape} smoke invocation mismatch")
         for field in (
             "paired_ratios_left_over_right",
             "median_paired_ratio_left_over_right",
@@ -328,9 +357,7 @@ def _verify_consistency(
                 errors.append(f"shape {shape} statistics mismatch: {field}")
         light = shape_result.get("light_statistics")
         if shape == "1" and len(pairs) == 7:
-            expected_light = paired_statistics(
-                pairs[:2], require_official_design=False
-            )
+            expected_light = paired_statistics(pairs[:2], require_official_design=False)
             if light != expected_light:
                 errors.append("shape 1 light statistics do not match its first two pairs")
         elif light is not None:
@@ -453,9 +480,7 @@ def _verify_phase_isolated_contracts(
                 errors.append(f"{side} shape {shape} contract environment was not closed")
             expected_by_side_shape[(side, str(shape))] = str(digest)
     promo_expected: dict[str, str] = {}
-    for side, attestation in result.get("promo", {}).get(
-        "contract_attestations", {}
-    ).items():
+    for side, attestation in result.get("promo", {}).get("contract_attestations", {}).items():
         digest = attestation.get("attestation_sha256")
         response = response_by_hash.get(digest)
         if response is None:
@@ -538,9 +563,7 @@ def _verify_reused_correctness(
     if decision != {"source": source, "receipt_ids": receipt_ids}:
         errors.append(f"shape {shape} parity reuse decision is inconsistent")
         return
-    evidence = {
-        item.get("receipt_id"): item for item in parity_gate.get("evidence", [])
-    }
+    evidence = {item.get("receipt_id"): item for item in parity_gate.get("evidence", [])}
     selected = [evidence.get(receipt_id) for receipt_id in receipt_ids]
     if any(item is None for item in selected):
         errors.append(f"shape {shape} parity receipt evidence is missing")
@@ -564,9 +587,11 @@ def _verify_reused_correctness(
             errors.append(f"shape {shape} parity action evidence is incompatible")
             return
     if source == "direct receipt":
-        if len(selected) != 1 or {
-            tuple(selected[0][role]) for role in ("authority", "candidate")
-        } != selected_identities:
+        if (
+            len(selected) != 1
+            or {tuple(selected[0][role]) for role in ("authority", "candidate")}
+            != selected_identities
+        ):
             errors.append(f"shape {shape} direct receipt does not bind the selected pair")
         return
     if len(selected) != 2:

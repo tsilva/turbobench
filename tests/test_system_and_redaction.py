@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from turbobench import assets
 from turbobench.assets import discover_assets
 from turbobench.profiles import get_profile
@@ -56,16 +58,18 @@ def test_host_record_never_contains_hostname() -> None:
     assert record["os"] and record["architecture"]
 
 
+@pytest.mark.parametrize("profile_id", ["breakout/start-v1", "breakout/firstwall-policy-v1"])
 def test_asset_discovery_merges_state_catalogs_without_exposing_paths(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, profile_id: str
 ) -> None:
-    profile = get_profile("breakout/start-v1")
+    profile = get_profile(profile_id)
     root_one = tmp_path / "one" / profile.game
     root_two = tmp_path / "two" / profile.game
     root_one.mkdir(parents=True)
     root_two.mkdir(parents=True)
     rom = root_one / "rom.a26"
     rom.write_bytes(b"canonical-test-rom")
+    (root_one / "Start.state").write_bytes(b"wrong-ambient-state")
     (root_one / "data.json").write_text('{"info":{"score":{},"lives":{}}}')
     state = root_two / "Start.state"
     state.write_bytes(b"canonical-test-state")
@@ -82,6 +86,7 @@ def test_asset_discovery_merges_state_catalogs_without_exposing_paths(
     private, portable = discover_assets(profile)
     assert portable["available"]
     assert set(private["state_paths"]) == {"Start"}
+    assert private["state_paths"]["Start"] == str(state.resolve())
     assert private["info_schema_path"] == str(info.resolve())
     assert private["scenario_path"] == str(scenario.resolve())
     assert not find_portability_violations(portable)

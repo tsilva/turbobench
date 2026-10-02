@@ -51,6 +51,9 @@ from turbobench.util import canonical_json_hash, read_json, redact, write_json
 class ComparisonOptions:
     promo: bool = False
     quick: bool = False
+    smoke: bool = False
+    measurement_only: bool = False
+    workflow_request: dict[str, Any] | None = None
     force_busy: bool = False
     allow_dirty: bool = False
     python_minor: str = "3.14"
@@ -65,6 +68,8 @@ class ComparisonOptions:
     @property
     def diagnostic_overrides(self) -> tuple[str, ...]:
         reasons: list[str] = []
+        if self.smoke:
+            reasons.append("smoke: one pair, one repetition, no warmup, shapes 1 and 2")
         if self.quick:
             reasons.append("quick workload override")
         if self.force_busy:
@@ -143,6 +148,10 @@ def run_comparison_resolved(
     private_assets: dict[str, Any] | None = None,
     portable_assets: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
+    if options.smoke and (
+        options.quick or options.steps is not None or options.shapes is not None or options.promo
+    ):
+        raise ValueError("--smoke cannot be combined with quick, steps, shapes, or promo")
     final = output.expanduser().resolve()
     partial = final.with_name(final.name + ".partial")
     if final.exists():
@@ -160,6 +169,9 @@ def run_comparison_resolved(
             "lock": lock,
             "options": {
                 "quick": options.quick,
+                "smoke": options.smoke,
+                "measurement_only": options.measurement_only,
+                "workflow_request": options.workflow_request,
                 "steps": options.steps,
                 "shapes": options.shapes,
                 "parity_receipt_ids": [
@@ -238,8 +250,7 @@ def run_comparison_resolved(
         )
         if not parity_gate["passed"]:
             raise ValueError(
-                "supplied parity receipt is incompatible: "
-                + "; ".join(parity_gate["errors"])
+                "supplied parity receipt is incompatible: " + "; ".join(parity_gate["errors"])
             )
 
     correctness: dict[str, Any] = {}
@@ -310,13 +321,15 @@ def run_comparison_resolved(
 
     options.report_progress("Checking system load")
     load = wait_for_load(
-        timeout_seconds=0 if options.quick else 900,
-        force_busy=options.force_busy or options.quick,
+        timeout_seconds=0 if options.quick or options.smoke else 900,
+        force_busy=options.force_busy or options.quick or options.smoke,
         progress=options.progress,
     )
     options.report_progress(f"System-load gate: {'passed' if load.get('passed') else 'failed'}")
     comparison_shapes: dict[str, Any] = {}
-    pair_count = profile.light_pairs if options.quick else profile.full_pairs
+    pair_count = (
+        1 if options.smoke else (profile.light_pairs if options.quick else profile.full_pairs)
+    )
     for shape in shapes:
         actions = canonical_actions(profile, shape, step_count)
         stream_hash = action_stream_hash(profile, actions)
@@ -325,10 +338,9 @@ def run_comparison_resolved(
         )
         shape_dir = partial / "raw" / f"shape-{shape}"
         shape_dir.mkdir(parents=True, exist_ok=True)
-        for warmup_index in range(profile.warmup_pairs):
+        for warmup_index in range(0 if options.smoke else profile.warmup_pairs):
             options.report_progress(
-                f"Benchmarking shape {shape}: warmup pair "
-                f"{warmup_index + 1}/{profile.warmup_pairs}"
+                f"Benchmarking shape {shape}: warmup pair {warmup_index + 1}/{profile.warmup_pairs}"
             )
             _warmup_pair(
                 shape_dir,
@@ -381,6 +393,7 @@ def run_comparison_resolved(
                         stream_hash,
                         assets,
                         label=f"pair-{pair_index + 1:02d}-{side}",
+                        smoke=options.smoke,
                         portable_assets=asset_record,
                         contract_attestation=contract_attestations[side][str(shape)],
                     )
@@ -409,9 +422,13 @@ def run_comparison_resolved(
         )
         shape_result = {
             "correctness": correctness[str(shape)],
-            "statistics": paired_statistics(pairs, require_official_design=not options.quick),
+            "statistics": paired_statistics(
+                pairs,
+                require_official_design=not (options.quick or options.smoke),
+                smoke=options.smoke,
+            ),
         }
-        if not options.quick and shape == 1:
+        if not options.quick and not options.smoke and shape == 1:
             shape_result["light_statistics"] = paired_statistics(
                 pairs[: profile.light_pairs], require_official_design=False
             )
@@ -463,7 +480,13 @@ def run_comparison_resolved(
     shape_one = comparison_shapes.get("1")
     headline_outcome = shape_one["statistics"]["outcome"] if shape_one else "inconclusive"
     result = {
-        "schema": RESULT_SCHEMA,
+        "schema": "turbobench.result/v3" if options.smoke else RESULT_SCHEMA,
+        "sampling": {
+            "mode": "smoke" if options.smoke else "quick" if options.quick else "full",
+            "pairs": pair_count,
+            "repetitions": 1 if options.smoke else 3,
+            "warmup_pairs": 0 if options.smoke else profile.warmup_pairs,
+        },
         "profile": {"id": profile.id, "sha256": profile_hash(profile)},
         "lock_sha256": canonical_json_hash(lock),
         "validity": {
@@ -578,8 +601,15 @@ def run_comparison_resolved(
 
     options.report_progress("Writing reports and manifest")
     write_json(partial / "result.json", result)
-    write_views(partial, result)
-    finalize_manifest(partial)
+    if options.measurement_only:
+        from turbobench.workflow import finalize_measurement
+
+        finalize_measurement(
+            partial, result, lock, left, right, profile, assets, asset_record, options
+        )
+    else:
+        write_views(partial, result)
+        finalize_manifest(partial)
     options.report_progress("Self-verifying result bundle")
     verification = verify_bundle(partial)
     if not verification["passed"]:
@@ -614,6 +644,8 @@ def _resolved_lock(
 
 
 def _selected_shapes(profile: Profile, options: ComparisonOptions) -> tuple[int, ...]:
+    if options.smoke:
+        return (1, 2)
     if options.shapes is not None:
         if not options.shapes or any(shape <= 0 for shape in options.shapes):
             raise ValueError("shapes must contain positive values")
@@ -622,11 +654,7 @@ def _selected_shapes(profile: Profile, options: ComparisonOptions) -> tuple[int,
 
 
 def _selected_steps(profile: Profile, options: ComparisonOptions) -> int:
-    value = (
-        options.steps
-        if options.steps is not None
-        else profile.measurement_steps
-    )
+    value = options.steps if options.steps is not None else profile.measurement_steps
     if value <= 0:
         raise ValueError("benchmark steps must be positive")
     return value
@@ -675,9 +703,7 @@ def _execution_spec_for(
             "protocol": EXECUTION_PROTOCOL,
         },
         python_minor=provider.python_minor,
-        python_identity=_runtime_python_identity(
-            provider.runtime_python, provider.python_minor
-        ),
+        python_identity=_runtime_python_identity(provider.runtime_python, provider.python_minor),
         platform={
             "os": host["os"],
             "os_release": host["os_release"],
@@ -727,9 +753,7 @@ def _execution_spec_for(
 
 
 @cache
-def _runtime_python_identity(
-    runtime_python: str | None, python_minor: str
-) -> dict[str, str]:
+def _runtime_python_identity(runtime_python: str | None, python_minor: str) -> dict[str, str]:
     if not runtime_python:
         return {"implementation": "unknown", "version": python_minor, "minor": python_minor}
     process = subprocess.run(
@@ -890,6 +914,7 @@ def _benchmark_invocation(
     assets: dict[str, Any],
     *,
     label: str,
+    smoke: bool = False,
     portable_assets: dict[str, Any],
     contract_attestation: dict[str, Any],
 ) -> dict[str, Any]:
@@ -898,14 +923,14 @@ def _benchmark_invocation(
         "operation": "benchmark",
         "actions": actions.tolist(),
         "action_stream_sha256": stream_hash,
-        "warmup_steps": min(500, len(actions)),
+        "warmup_steps": 0 if smoke else min(500, len(actions)),
+        "smoke": smoke,
+        "repetitions": 1 if smoke else 3,
         "execution_spec": _execution_spec_for(provider, profile, shape, portable_assets),
         "contract_attestation": contract_attestation,
     }
     response = invoke_runner(provider, request, log_path=shape_dir / f"{label}.log")
-    _require_evidence_binding(
-        response, request["execution_spec"], contract_attestation
-    )
+    _require_evidence_binding(response, request["execution_spec"], contract_attestation)
     return response
 
 
@@ -1053,8 +1078,7 @@ def _validity_gates(
             "phase-isolated execution protocol",
             evidence_attestations_match
             and all(
-                attestation.get("protocol") == EXECUTION_PROTOCOL
-                and attestation.get("passed")
+                attestation.get("protocol") == EXECUTION_PROTOCOL and attestation.get("passed")
                 for attestations in contract_attestations.values()
                 for attestation in attestations.values()
             ),
@@ -1139,8 +1163,10 @@ def _promo_replay(
     portable_assets: dict[str, Any],
     contract_attestation: dict[str, Any],
     side: str,
+    *,
+    record_frames: bool = True,
 ) -> tuple[dict[str, Any], Path]:
-    frames = temporary / f"{side}.rgb"
+    frames = temporary / f"{side}.rgb" if record_frames else Path(os.devnull)
     request = {
         **_base_request(provider, profile, 1, assets),
         "operation": "promo",
@@ -1148,9 +1174,7 @@ def _promo_replay(
         "promo_actions": actions,
         "promo_action_sha256": stream_hash,
         "output_frames": str(frames),
-        "execution_spec": _execution_spec_for(
-            provider, profile, 1, portable_assets, frame_skip=1
-        ),
+        "execution_spec": _execution_spec_for(provider, profile, 1, portable_assets, frame_skip=1),
         "contract_attestation": contract_attestation,
     }
     response = invoke_runner(

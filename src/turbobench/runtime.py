@@ -36,7 +36,7 @@ def harness_source_hash() -> str:
     root = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     for path in sorted(
-        item for item in root.rglob("*") if item.is_file() and item.suffix in {".py", ".toml"}
+        item for item in root.rglob("*") if item.is_file() and item.suffix in {".py", ".toml", ".json", ".ttf", ".txt"}
     ):
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(b"\0")
