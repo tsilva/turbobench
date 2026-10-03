@@ -36,76 +36,33 @@ explicit `.postN`, but never add a post-release suffix automatically.
 Keep the version identical in `pyproject.toml`,
 `src/turbobench/__init__.py`, and the root `turbobench-cli` entry in `uv.lock`.
 
-## Build a local candidate
+## Build or validate in GitHub Actions
 
-1. Read `AGENTS.md` and use `$specs-author` as required there.
+Read `AGENTS.md` and apply `$specs-author`. Normal release and validation builds
+run only in Actions. A local candidate requires an explicit request for a local
+source build; use the existing `build` helper only for that outcome.
 
-2. Inspect the worktree and current metadata without mutating either:
-
-```bash
-git status --short --branch
-python3 .codex/skills/build-release/scripts/release_build.py check-version
-```
-
-Dirty files do not prevent an explicitly requested local candidate, but report
-that it is not eligible for publication and preserve every existing change.
-
-3. Select the release version:
+For validation without publication, fetch the current branch's configured
+upstream on main, resolve its full commit SHA, and run:
 
 ```bash
-python3 .codex/skills/build-release/scripts/release_build.py prepare-version
+gh workflow run release.yml --ref main -f ref=<full-pushed-main-sha>
 ```
 
-On a clean worktree, add `--write` to apply an automatic bump when the checked-in
-version is already tagged or published. For an exact user-requested version,
-add `--to <version>`. The helper checks local `turbobench-cli-v*` tags and the
-`turbobench-cli` PyPI project and
-transactionally updates all three version locations. If the worktree is dirty,
-do not add `--write`; proceed only when the reported pending version requires no
-bump. Never layer an automatic version edit onto existing user changes.
-
-4. Install and run the locked source gates:
+The runner enforces the frozen lock, matching three source versions, Ruff,
+portable tests with FFmpeg, wheel/sdist audits, isolated wheel import and CLI
+entry-point metadata. The host/asset-dependent acceptance suite remains outside
+the portable release gate. Download `release-v<version>` into a fresh external
+directory, then audit its existing artifacts:
 
 ```bash
-command -v ffmpeg
-uv sync --frozen --group dev
-uv run --frozen ruff check .
-uv run --frozen pytest -m "not acceptance"
+python3 .codex/skills/build-release/scripts/release_build.py audit \
+  --version <version> --dist-dir <download-directory>
 ```
 
-Require FFmpeg because the portable media end-to-end test exercises MP4 and GIF
-generation. Do not require provider assets for a release candidate. The
-`acceptance` suite is host- and asset-dependent and remains outside the portable
-release gate.
-
-5. Confirm the selected version remains unused on PyPI:
-
-```bash
-python3 .codex/skills/build-release/scripts/release_build.py \
-  check-pypi --version <version>
-```
-
-Skip only this availability check when diagnosing artifacts from an already
-published version, and state why. Never overwrite or republish an existing PyPI
-version.
-
-6. Build into a fresh version-scoped directory:
-
-```bash
-python3 .codex/skills/build-release/scripts/release_build.py build \
-  --version <version> --out-dir dist/release-v<version>
-```
-
-The helper uses `uv build --no-sources`, requires exactly one universal wheel
-and one source distribution, audits metadata and repository-owned package
-contents, imports the wheel from an isolated working directory, validates the
-console entry point metadata, and prints SHA-256 digests. It refuses to reuse an
-output directory so stale artifacts cannot enter the candidate.
-
-7. Report both artifact paths, their SHA-256 digests, the selected version,
-whether metadata was bumped, and every completed gate. Preserve failed
-artifacts and exact error output for diagnosis. An uncommitted automatic bump is
-not eligible for publication.
+Monitor the exact dispatched SHA and compare downloaded SHA-256 digests with
+the runner log. A validation dispatch never tags or publishes. It builds pushed
+source; dirty local changes are excluded and must not be described as tested.
 
 ## Publish a release
 
@@ -116,7 +73,7 @@ Require all of the following before tagging or publishing:
 - consistent version metadata for the selected version;
 - an unused `turbobench-cli` PyPI version and unused
   `turbobench-cli-v<version>` tag;
-- a passing local candidate from the exact commit; and
+- metadata checks without a local artifact build; and
 - a checked-in `.github/workflows/release.yml` that builds and audits the same
   wheel and sdist, publishes through PyPI Trusted Publishing, and creates a
   GitHub Release only for a pushed release tag.
@@ -127,12 +84,14 @@ or no longer matches this contract, stop before tagging or pushing and repair
 the repository-owned path. Do not replace it with a local upload.
 
 Start clean, fetch the configured remote and tags, confirm synchronization, run
-`prepare-version --write`, and complete all source and candidate gates. If
+`prepare-version --write`, run `check-version`, `check-pypi`,
+`uv lock --check --config-file uv-tool.toml`, and `git diff --check`. Do not
+install a local environment, run source tests, or build a local candidate. If
 version preparation changed metadata, commit exactly `pyproject.toml`,
-`src/turbobench/__init__.py`, and `uv.lock` as `Release <version>`. Verify that
-the committed tree is identical to the source used for the passing candidate.
+`src/turbobench/__init__.py`, and `uv.lock` as `Release <version>`. Verify that all three committed source versions agree. Actions validates and
+builds the exact tagged commit before publication.
 
-Create an annotated tag only after every requirement passes, then atomically
+Create an annotated tag only after the metadata requirements pass, then atomically
 push the current branch and tag:
 
 ```bash
