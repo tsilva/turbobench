@@ -10,7 +10,7 @@ Before every task in this repository, use the `$specs-author` skill to read the 
 
 ## Release Builds
 
-Use `$build-release` whenever asked to build, cut, publish, monitor, or verify a turbobench release.
+Use `$build-release` whenever asked to build, cut, publish, monitor, or verify a turbobench release. Normal builds run only in GitHub Actions; local preparation handles version metadata and Git operations.
 
 ## Comparison Media
 
