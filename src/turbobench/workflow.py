@@ -447,7 +447,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     with (root / "report.md").open("a") as report:
         report.write(
             f"\n## Policy and showcase\n\nCheckpoint: `{contract['checkpoint_sha256']}`; step {contract['checkpoint_step']}.\n\nTracking: {contract['mlflow_url']}\n\nLimitations: {contract['limitations']}\n\nExcerpt: {contract['decisions']} / {contract['total_captured_decisions']} captured decisions.\n\n"
-            + "\n".join(contract["benchmark_differences"])
+            + "\n".join(_showcase_benchmark_differences(contract, request))
             + "\n\nPlayback illustrates shape-1 throughput with common 4x time compression; it is not a wall-clock recording.\n"
         )
     bindings = {
@@ -480,6 +480,13 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     manifest = finalize_proof(root, f"turbobench.showcase-proof/v{version}", bindings)
     require_proof(root)
     return manifest
+
+
+def _showcase_benchmark_differences(contract: dict, request: dict) -> list[str]:
+    differences = list(contract["benchmark_differences"])
+    if request["schema"] == "turbobench.comparison-request/v3":
+        differences[0] = "captured policy controls for both benchmark timing and showcase"
+    return differences
 
 
 def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:

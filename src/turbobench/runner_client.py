@@ -18,6 +18,25 @@ _ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_.-])(?:/[A-Za-z0-9_.+@%:,=-]+){2,}"
 RUNNER_TIMEOUT_SECONDS = 900
 
 
+def _runner_timeout_seconds(request: dict[str, Any]) -> int:
+    """Bound workers by requested work, keeping the existing small-job floor."""
+    steps = len(request.get("actions") or [])
+    if not steps:
+        return RUNNER_TIMEOUT_SECONDS
+    repetitions = int(request.get("repetitions", 1))
+    warmup = int(request.get("warmup_steps", 0))
+    snapshot = 2 * int(request.get("snapshot_suffix_steps", 0))
+    constructor = (request.get("execution_spec") or {}).get("constructor") or {}
+    frame_skip = int(request.get("frame_skip", constructor.get("frame_skip", 1)))
+    frames = int(request.get("shape", 1)) * frame_skip * (
+        steps * repetitions + warmup + snapshot
+    )
+    # A 64-lane, 3,000-decision, three-repeat job at skip 2 retains 15 minutes.
+    # Larger captures/counts scale that finite budget; timing itself is unchanged.
+    baseline_frames = 64 * 2 * (3000 * 3 + 500)
+    return RUNNER_TIMEOUT_SECONDS * max(1, (frames + baseline_frames - 1) // baseline_frames)
+
+
 def invoke_runner(
     provider: ResolvedProvider,
     request: dict[str, Any],
@@ -26,6 +45,7 @@ def invoke_runner(
 ) -> dict[str, Any]:
     if not provider.runtime_python:
         raise RuntimeError(f"provider {provider.provider} has no prepared runtime")
+    timeout_seconds = _runner_timeout_seconds(request)
     source_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="turbobench-request-") as raw_temp:
         temporary = Path(raw_temp)
@@ -60,14 +80,14 @@ def invoke_runner(
             start_new_session=os.name != "nt",
         )
         try:
-            stdout, _stderr = process.communicate(timeout=RUNNER_TIMEOUT_SECONDS)
+            stdout, _stderr = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             stdout = _terminate_runner(process)
             redacted_log = _ABSOLUTE_PATH.sub("<redacted-path>", stdout or "")
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(redacted_log, encoding="utf-8")
             raise RuntimeError(
-                f"{provider.provider} runner exceeded {RUNNER_TIMEOUT_SECONDS} seconds; "
+                f"{provider.provider} runner exceeded {timeout_seconds} seconds; "
                 f"see {log_path.name}"
             ) from None
         except BaseException:

@@ -534,3 +534,20 @@ def test_installed_runner_does_not_import_controller_dependencies(tmp_path, monk
         side="left",
     )
     assert attestation["passed"]
+
+
+def test_policy_showcase_report_labels_actual_timing_controls_without_mutating_import():
+    from turbobench.workflow import _showcase_benchmark_differences
+
+    contract = {"benchmark_differences": ["seeded canonical controls", "inference excluded"]}
+    differences = _showcase_benchmark_differences(
+        contract, {"schema": "turbobench.comparison-request/v3"}
+    )
+    assert differences == [
+        "captured policy controls for both benchmark timing and showcase",
+        "inference excluded",
+    ]
+    assert contract["benchmark_differences"][0] == "seeded canonical controls"
+    assert _showcase_benchmark_differences(
+        contract, {"schema": "turbobench.comparison-request/v2"}
+    ) == contract["benchmark_differences"]

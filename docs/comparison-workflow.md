@@ -119,6 +119,12 @@ count, including the confirming plateau or slower count, in the grouped bars.
 The rule is a declared throughput heuristic; it does not claim a statistical
 confidence interval for the location of a throughput peak.
 
+Worker deadlines have a 15-minute floor and scale with the requested lane,
+frame-skip, capture-length, repetition, warmup, and snapshot-replay work. A
+larger healthy full-policy invocation can therefore finish without shortening
+the capture or changing the sample design. Workers that exceed their finite
+budget are still terminated and leave partial evidence.
+
 The locked safety cap is 1024 environments. Reaching it without both providers
 qualifying is `safety_cap`, not evidence of saturation: the measurement remains
 diagnostic and cannot produce an official showcase. The coordinator preserves

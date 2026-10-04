@@ -27,14 +27,14 @@ providers; diagnostic videos are visibly watermarked.
 Requires Python 3.11+, `uv`, FFmpeg, and FFprobe. Isolated provider environments
 default to CPython 3.14.
 
-Install [turbobench-cli 2.0.10](https://pypi.org/project/turbobench-cli/2.0.10/):
+Install [turbobench-cli 2.0.11](https://pypi.org/project/turbobench-cli/2.0.11/):
 
 ```bash
-uv tool install turbobench-cli==2.0.10
+uv tool install turbobench-cli==2.0.11
 ```
 
 Alternatively, install it in an active virtual environment with
-`python -m pip install turbobench-cli==2.0.10`. The installed command and Python
+`python -m pip install turbobench-cli==2.0.11`. The installed command and Python
 import remain `turbobench`.
 
 For development, use the checkout:
