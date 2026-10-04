@@ -36,7 +36,11 @@ def harness_source_hash() -> str:
     root = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     for path in sorted(
-        item for item in root.rglob("*") if item.is_file() and item.suffix in {".py", ".toml", ".json", ".ttf", ".txt"}
+        item
+        for item in root.rglob("*")
+        if item.is_file()
+        and "workflow_runtime" not in item.relative_to(root).parts
+        and item.suffix in {".py", ".toml", ".json", ".ttf", ".txt"}
     ):
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(b"\0")
@@ -208,7 +212,9 @@ def _install_subject(
             None,
         )
         if selected is None:
-            raise RuntimeError(f"downloaded artifact is absent from the resolved release: {artifact.name}")
+            raise RuntimeError(
+                f"downloaded artifact is absent from the resolved release: {artifact.name}"
+            )
         return str(artifact), _portable_artifact(selected)
     if provider.source_kind == "artifact":
         if artifact_path is None:
@@ -317,10 +323,14 @@ def _artifact_score(provider: ResolvedProvider, item: dict[str, Any]) -> tuple[i
     if "none-any" in lowered:
         platform_score = 0
     elif sys.platform == "darwin":
-        platform_score = 0 if ("macosx" in lowered and (machine in lowered or "universal2" in lowered)) else 20
+        platform_score = (
+            0 if ("macosx" in lowered and (machine in lowered or "universal2" in lowered)) else 20
+        )
     elif sys.platform.startswith("linux"):
         aliases = {"x86_64", "amd64"} if machine in {"x86_64", "amd64"} else {machine, "aarch64"}
-        platform_score = 0 if ("linux" in lowered and any(alias in lowered for alias in aliases)) else 20
+        platform_score = (
+            0 if ("linux" in lowered and any(alias in lowered for alias in aliases)) else 20
+        )
     else:
         platform_score = 0 if "none-any" in lowered else 20
     if python_score >= 40 or platform_score:
@@ -360,9 +370,7 @@ def _snapshot_checkout(provider: ResolvedProvider, checkout: Path, destination: 
             )
 
 
-def _checkout_submodules(
-    root: Path, *, allow_moved: bool
-) -> list[tuple[Path, Path, str]]:
+def _checkout_submodules(root: Path, *, allow_moved: bool) -> list[tuple[Path, Path, str]]:
     process = subprocess.run(
         ["git", "submodule", "status", "--recursive"],
         cwd=root,
@@ -424,14 +432,14 @@ def _overlay_dirty_checkout(
                 or "could not inspect dirty checkout"
             )
         relative_paths.update(
-            Path(os.fsdecode(raw))
-            for raw in completed.stdout.split(b"\0")
-            if raw
+            Path(os.fsdecode(raw)) for raw in completed.stdout.split(b"\0") if raw
         )
     for relative in sorted(relative_paths):
         if relative.is_absolute() or ".." in relative.parts:
             raise RuntimeError(f"unsafe dirty checkout path: {relative}")
-        if any(relative == excluded or relative.is_relative_to(excluded) for excluded in exclude_roots):
+        if any(
+            relative == excluded or relative.is_relative_to(excluded) for excluded in exclude_roots
+        ):
             continue
         source = root / relative
         target = destination / relative

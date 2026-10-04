@@ -46,13 +46,24 @@ def validate_request(request: dict[str, Any]) -> None:
     if request["request_id"] != canonical_json_hash({**request, "request_id": ""}):
         raise ValueError("request ID mismatch")
     profile = request_profile(request)
-    if request["schema"] == "turbobench.comparison-request/v2":
+    if request["schema"] in {
+        "turbobench.comparison-request/v2",
+        "turbobench.comparison-request/v3",
+    }:
         workload = request["resolved_workload"]
         if (
             set(workload["declarations"]) != {"left", "right"}
             or workload["policy_contract"] != request["policy_contract"]
         ):
             raise ValueError("request is missing locked provider declarations or policy contract")
+    if request["schema"] == "turbobench.comparison-request/v3":
+        if (
+            profile.action_stream_version != "captured-policy/v1"
+            or request["actions"] != request["resolved_workload"]["policy_actions"]
+        ):
+            raise ValueError("policy measurement actions differ from locked workload")
+    elif profile.action_stream_version == "captured-policy/v1":
+        raise ValueError("policy timing requires comparison-request/v3")
     contract = request["policy_contract"]
     if contract["frame_skip"] != profile.frame_skip or contract[
         "action_sha256"
@@ -167,7 +178,9 @@ def finalize_measurement(
         "mode": "smoke" if options.smoke else "full",
     }
     version = 2 if "resolved_workload" in request else 1
-    if version == 2:
+    if request["schema"] == "turbobench.comparison-request/v3":
+        version = 3
+    if version >= 2:
         bindings["workload_sha256"] = canonical_json_hash(request["resolved_workload"])
     finalize_proof(
         root,
@@ -193,7 +206,30 @@ def replay_preflight(root: Path, side: str, record: Any) -> dict[str, Any]:
 def verify_sampling(root: Path, request: dict[str, Any], result: Any) -> None:
     profile = request_profile(request)
     smoke = request["smoke"]
-    shapes = (1, 2) if smoke else profile.measurement_shapes
+    from turbobench.scaling import scaling_rule, verify_scaling
+
+    shapes = (
+        (1, 2)
+        if smoke
+        else (
+            verify_scaling(profile, result) if scaling_rule(profile) else profile.measurement_shapes
+        )
+    )
+    if request["schema"] == "turbobench.comparison-request/v3":
+        from turbobench.profiles import action_stream_hash, canonical_actions
+        from turbobench.workloads import policy_benchmark_settings
+
+        for shape in shapes:
+            digest = action_stream_hash(profile, canonical_actions(profile, shape))
+            for path in (root / "raw" / f"shape-{shape}").glob("*.json"):
+                if path.name == "pairs.json":
+                    continue
+                record = read_json(path)
+                if (
+                    record.get("policy_reset") != policy_benchmark_settings(profile)
+                    or record.get("action_stream_sha256") != digest
+                ):
+                    raise ValueError("policy timing/trace reset/action commitment mismatch")
     pair_count = 1 if smoke else profile.full_pairs
     repetitions = 1 if smoke else 3
     warmups = 0 if smoke else profile.warmup_pairs
@@ -346,7 +382,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     from turbobench.providers import load_providers, parse_provider_ref
     from turbobench.reporting import write_views
     from turbobench.resolution import resolve_pair
-    from turbobench.showcase import generate_showcase_assets, scaling_chart
+    from turbobench.showcase import COMPARISON_STYLE, generate_showcase_assets, scaling_chart
 
     benchmark = require_proof(root / "benchmark")
     policy = require_proof(root / "policy")
@@ -420,15 +456,26 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
         "render_machine": identity,
         "render_harness_sha256": harness_source_hash(),
         "mode": "smoke" if request["smoke"] else "full",
-        "style": "comparison-style/v1",
+        "style": COMPARISON_STYLE,
         "assets": assets,
         "pipeline_passed": True,
     }
-    snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same policy, same actions: environment throughput comparison"></a></p>\n\n![Speedup by environment count](chart.svg)\n\n'
-    snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses seeded controls and excludes inference and task/context wrappers. Policy: {contract['mlflow_url']}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
+    snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same policy, same actions: environment throughput comparison"></a></p>\n\n![Provider throughput and speedup by environment count](chart.svg)\n\n'
+    timing_controls = (
+        "captured policy actions"
+        if request["schema"] == "turbobench.comparison-request/v3"
+        else "seeded controls"
+    )
+    snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses {timing_controls} and excludes inference and task/context wrappers. Policy: {contract['mlflow_url']}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
     (root / "README-snippet.md").write_text(snippet)
-    version = 2 if profile.resolved_workload is not None else 1
-    if version == 2:
+    version = (
+        3
+        if request["schema"] == "turbobench.comparison-request/v3"
+        else 2
+        if profile.resolved_workload is not None
+        else 1
+    )
+    if version >= 2:
         bindings["workload_sha256"] = canonical_json_hash(profile.resolved_workload)
     manifest = finalize_proof(root, f"turbobench.showcase-proof/v{version}", bindings)
     require_proof(root)
@@ -436,9 +483,15 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
 
 
 def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
+    from turbobench.showcase import COMPARISON_STYLES
+
     benchmark = require_proof(root / "benchmark")
     policy = require_proof(root / "policy")
     request = read_json(root / "benchmark" / "request.json")
+    if (read_json(root / "manifest.json")["schema"] == "turbobench.showcase-proof/v3") != (
+        benchmark["schema"] == "turbobench.benchmark-proof/v3"
+    ):
+        raise ValueError("showcase proof version differs from benchmark action protocol")
     if (
         bindings["benchmark_id"] != benchmark["proof_id"]
         or bindings["policy_id"] != policy["proof_id"]
@@ -459,7 +512,7 @@ def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
     if (
         bindings["mode"] != ("smoke" if smoke else "full")
         or bindings["pipeline_passed"] is not True
-        or bindings["style"] != "comparison-style/v1"
+        or bindings["style"] not in COMPARISON_STYLES
     ):
         raise ValueError("showcase mode/style/status mismatch")
     profile = request_profile(request)
@@ -488,7 +541,9 @@ def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
     from turbobench.showcase import scaling_chart, verify_assets
 
     verify_assets(root, bindings["assets"], result, smoke)
-    if (root / "chart.svg").read_text() != scaling_chart(result, diagnostic=smoke):
+    if (root / "chart.svg").read_text() != scaling_chart(
+        result, diagnostic=smoke, style=bindings["style"]
+    ):
         raise ValueError("scaling chart is not derived from benchmark statistics")
 
 
@@ -513,6 +568,38 @@ def _extract(archive: Path, destination: Path) -> None:
             ):
                 raise ValueError("unsafe remote archive entry")
         tar.extractall(destination, filter="data")
+
+
+def _harness_layout(package: Path | None = None) -> tuple[Path, Path, bool]:
+    package = package or Path(__file__).resolve().parent
+    bundled = package / "workflow_runtime"
+    installed = bundled.is_dir()
+    metadata = bundled if installed else package.parent.parent
+    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
+        if not (metadata / name).is_file():
+            raise ValueError(f"missing workflow runtime metadata: {name}")
+    return package, metadata, installed
+
+
+def _measurement_command(remote: str, python_minor: str, installed: bool) -> str:
+    from turbobench import __version__
+
+    base = f'cd {shlex.quote(remote)}/harness && export PATH="$HOME/.local/bin:$PATH" && '
+    if installed:
+        # Only the explicitly selected TurboBench release bypasses age limits;
+        # dependencies come from the bundled frozen lock, without new resolution.
+        base += (
+            f"uv sync --frozen --no-dev --no-install-project --python {shlex.quote(python_minor)} && "
+            f"uv --no-config pip install --python .venv/bin/python --no-deps turbobench-cli=={__version__} && "
+        )
+        executable = ".venv/bin/turbobench"
+    else:
+        base += f"uv sync --frozen --no-dev --python {shlex.quote(python_minor)} && "
+        executable = "uv run --frozen --no-dev turbobench"
+    return (
+        base
+        + f"if test ! -f ../benchmark/manifest.json; then {executable} measure-request ../request.json --output ../benchmark; fi"
+    )
 
 
 def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
@@ -550,7 +637,13 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
     definition = policy["bindings"]["definition"]
     if args.profile not in {definition, original["bindings"].get("profile")}:
         raise ValueError("locked policy package does not match the selected comparison definition")
-    preliminary = preliminary_workload(policy["bindings"]["contract"], definition)
+    policy_timing = bool(getattr(args, "policy_benchmark", False))
+    selected_actions = read_json(args.policy / "actions.json")["actions"]
+    preliminary = preliminary_workload(
+        policy["bindings"]["contract"],
+        definition,
+        policy_actions=selected_actions if policy_timing else None,
+    )
     profile = profile_from_workload(preliminary)
     progress(f"Resolving {definition} from the saved policy contract")
     definitions = load_providers()
@@ -573,13 +666,16 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
         preliminary["protocol"],
         preliminary["policy_contract"],
         declarations,
+        selected_actions if policy_timing else None,
     )
     profile = profile_from_workload(workload)
     progress(
         f"Locked workload {profile.id}; frameskip={profile.frame_skip}, framestack={profile.frame_stack}"
     )
     request = {
-        "schema": "turbobench.comparison-request/v2",
+        "schema": "turbobench.comparison-request/v3"
+        if policy_timing
+        else "turbobench.comparison-request/v2",
         "request_id": "",
         "profile": profile.id,
         "left": f"{providers['left'].provider}@{providers['left'].version}",
@@ -612,21 +708,24 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
     remote_absolute = remote_home + "/" + remote
     progress("Staging the exact harness and request on the benchmark host")
     _run([*ssh, f"mkdir -p {shlex.quote(remote_absolute)}"])
-    source = Path(__file__).resolve().parents[2]
+    package, metadata, installed = _harness_layout()
     with tempfile.TemporaryDirectory(prefix="turbobench-transfer-") as temporary:
         archive = Path(temporary) / "harness.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
-                tar.add(source / name, arcname="harness/" + name)
-            for path in (source / "src").rglob("*"):
+                tar.add(metadata / name, arcname="harness/" + name)
+            for path in package.rglob("*"):
                 if path.is_file() and "__pycache__" not in path.parts:
-                    tar.add(path, arcname="harness/" + path.relative_to(source).as_posix())
+                    tar.add(
+                        path,
+                        arcname="harness/src/turbobench/" + path.relative_to(package).as_posix(),
+                    )
             tar.add(saved_request, arcname="request.json")
         _run(["scp", "-q", str(archive), f"{host}:{remote_absolute}/harness.tar.gz"])
         _run([*ssh, f"cd {shlex.quote(remote_absolute)} && tar -xzf harness.tar.gz"])
         if not (staging / "benchmark").exists():
             progress("Running isolated measurements and hash-only replay on the benchmark host")
-            command = f'cd {shlex.quote(remote_absolute)}/harness && export PATH="$HOME/.local/bin:$PATH" && uv sync --frozen --no-dev && if test ! -f ../benchmark/manifest.json; then uv run --frozen --no-dev turbobench measure-request ../request.json --output ../benchmark; fi'
+            command = _measurement_command(remote_absolute, args.python_minor, installed)
             process = subprocess.Popen([*ssh, command])
             if process.wait() != 0:
                 raise RuntimeError("remote measurement failed; rerun the same command to resume")
@@ -640,9 +739,76 @@ def run_workflow(args: Any, output: Path, progress: Any = print) -> Path:
     benchmark = require_proof(staging / "benchmark")
     if benchmark["bindings"]["request_id"] != request["request_id"]:
         raise ValueError("downloaded proof belongs to another request")
-    progress("Remote evidence verified; generating assets locally")
+    progress(
+        "Remote evidence verified; finalizing policy benchmark"
+        if policy_timing and not args.showcase
+        else "Remote evidence verified; generating assets locally"
+    )
     for name in ("request.json",):
         (staging / name).unlink()
-    render_showcase(staging, progress)
+    if policy_timing and not args.showcase:
+        finalize_policy_benchmark(staging)
+    else:
+        render_showcase(staging, progress)
+    require_proof(staging)
     staging.rename(output)
     return output
+
+
+def finalize_policy_benchmark(root: Path) -> dict[str, Any]:
+    from turbobench.reporting import write_views
+    from turbobench.showcase import COMPARISON_STYLE, scaling_chart
+
+    benchmark, policy = require_proof(root / "benchmark"), require_proof(root / "policy")
+    request = read_json(root / "benchmark" / "request.json")
+    result = read_json(root / "benchmark" / "result.json")
+    pipeline_gates(result, request["smoke"])
+    write_views(root, result)
+    (root / "chart.svg").write_text(scaling_chart(result, diagnostic=request["smoke"]))
+    contract = policy["bindings"]["contract"]
+    with (root / "report.md").open("a") as report:
+        report.write(
+            f"\n## Locked policy workload\n\nCheckpoint: `{contract['checkpoint_sha256']}`; "
+            f"training step {contract['checkpoint_step']}.\n\nTracking: {contract['mlflow_url']}\n\n"
+            f"Measured all {contract['decisions']} captured decisions of {contract['total_captured_decisions']}; "
+            "every lane replays the same effective controls with the captured reset seed. "
+            "Repetitions restart from that same seed. Initial seeded no-op reset is outside timing. "
+            "Training frame skip and observation preprocessing are preserved. "
+            "Policy inference, trajectory recording, correctness hashing and rendering are excluded. "
+            "Timing includes environment stepping, preprocessing, IPC, infos and required selective resets. "
+            "No video was generated.\n\n"
+            f"Limitations: {contract['limitations']}\n\n"
+            "Task/context/reward wrappers remain excluded; obs_copy=copy and num_threads=n_envs. "
+            "This workload has correlated lanes and does not estimate policy success rate.\n"
+        )
+    bindings = {
+        "benchmark_id": benchmark["proof_id"],
+        "policy_id": policy["proof_id"],
+        "style": COMPARISON_STYLE,
+    }
+    return finalize_proof(root, "turbobench.policy-benchmark-proof/v1", bindings)
+
+
+def verify_policy_benchmark(root: Path, bindings: dict[str, Any]) -> None:
+    from turbobench.showcase import COMPARISON_STYLES, scaling_chart
+
+    benchmark, policy = require_proof(root / "benchmark"), require_proof(root / "policy")
+    request = read_json(root / "benchmark" / "request.json")
+    if (
+        benchmark["schema"] != "turbobench.benchmark-proof/v3"
+        or request["schema"] != "turbobench.comparison-request/v3"
+        or bindings["benchmark_id"] != benchmark["proof_id"]
+        or bindings["policy_id"] != policy["proof_id"]
+        or request["policy_id"] != policy["proof_id"]
+        or request["policy_contract"] != policy["bindings"]["contract"]
+        or request["actions"] != read_json(root / "policy" / "actions.json")["actions"]
+    ):
+        raise ValueError("policy benchmark child/contract/action binding mismatch")
+    result = read_json(root / "benchmark" / "result.json")
+    pipeline_gates(result, request["smoke"])
+    if bindings["style"] not in COMPARISON_STYLES or (
+        root / "chart.svg"
+    ).read_text() != scaling_chart(result, diagnostic=request["smoke"], style=bindings["style"]):
+        raise ValueError("policy benchmark chart differs from bound evidence")
+    if list((root / "media").glob("*")):
+        raise ValueError("benchmark-only proof must not contain videos")

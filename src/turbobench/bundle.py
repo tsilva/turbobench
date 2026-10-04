@@ -168,7 +168,7 @@ def _verify_consistency(
         errors.append(f"result or lock is unreadable: {exc}")
         return
     result_schema = result.get("schema")
-    if result_schema not in {RESULT_SCHEMA, "turbobench.result/v3"}:
+    if result_schema not in {RESULT_SCHEMA, "turbobench.result/v3", "turbobench.result/v4"}:
         errors.append("unsupported result schema")
         return
     smoke = result_schema == "turbobench.result/v3"
@@ -192,6 +192,45 @@ def _verify_consistency(
     except (KeyError, ValueError) as exc:
         errors.append(str(exc))
         return
+    from turbobench.scaling import scaling_rule, verify_scaling
+
+    if result_schema == "turbobench.result/v4":
+        try:
+            counts = verify_scaling(profile, result)
+            if read_json(root / "verification" / "scaling.json") != result["scaling"]:
+                raise ValueError("adaptive stopping artifact differs from result")
+            selected = set(map(str, counts))
+            if set(result["actions"]) != selected or any(
+                set(result["contract_attestations"][side]) != selected for side in ("left", "right")
+            ):
+                raise ValueError("adaptive actions/attestations differ from measured counts")
+            gate = next(
+                g for g in result["validity"]["gates"] if g["name"] == "official sample design"
+            )
+            if bool(gate["passed"]) != result["scaling"]["complete"]:
+                raise ValueError("adaptive sample-design gate differs from stopping decision")
+            from turbobench.workflow import verify_sampling
+
+            verify_sampling(
+                root,
+                {
+                    "schema": "turbobench.comparison-request/v3"
+                    if profile.action_stream_version == "captured-policy/v1"
+                    else "turbobench.comparison-request/v2",
+                    "profile": profile.id,
+                    "resolved_workload": profile.resolved_workload,
+                    "smoke": False,
+                },
+                result,
+            )
+        except (KeyError, ValueError, OSError, StopIteration, TypeError) as exc:
+            errors.append(f"adaptive scaling evidence is invalid: {exc}")
+    elif "scaling" in result or (
+        scaling_rule(profile) is not None
+        and result.get("sampling", {}).get("mode") == "full"
+        and result["claim"]["status"] == "official"
+    ):
+        errors.append("adaptive full result is missing its versioned stopping decision")
     if (root / "profile.toml").read_text(encoding="utf-8") != profile_toml(profile):
         errors.append("profile.toml does not match the immutable built-in profile")
     if result["profile"].get("sha256") != profile_hash(profile):

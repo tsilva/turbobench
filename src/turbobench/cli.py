@@ -54,10 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument(
         "--smoke", action="store_true", help="one pair at n_envs=1,2; no warmups or CI"
     )
-    compare.add_argument(
+    workflow_mode = compare.add_argument_group("policy workflow")
+    workflow_mode.add_argument(
         "--showcase", action="store_true", help="two-host policy-backed proof and showcase workflow"
     )
-    compare.add_argument("--policy", type=Path, help="verified policy-pack directory")
+    workflow_mode.add_argument(
+        "--policy-benchmark",
+        action="store_true",
+        help="time the locked policy capture with adaptive scaling; add --showcase for video",
+    )
+    compare.add_argument(
+        "--policy",
+        type=Path,
+        help="verified policy-pack directory; implies policy benchmark without --showcase",
+    )
     compare.add_argument("--benchmark-host", help="SSH host for isolated measurements")
     compare.add_argument("--render-host", default="local", choices=["local"])
     compare.add_argument("--output", type=Path)
@@ -278,12 +288,16 @@ def _profiles_list() -> None:
 def _compare(args: argparse.Namespace, command: list[str]) -> int:
     from turbobench.defaults import apply_comparison_defaults
 
+    if args.policy is not None and not args.showcase:
+        args.policy_benchmark = True
     apply_comparison_defaults(args)
-    if args.showcase:
+    if args.showcase or args.policy_benchmark:
         from turbobench.workflow import run_workflow
 
         output = args.output or _default_output(args.profile)
-        _print_progress(f"Showcase: {args.profile}; {args.left} vs {args.right}")
+        _print_progress(
+            f"{'Policy benchmark' if args.policy_benchmark else 'Showcase'}: {args.profile}; {args.left} vs {args.right}"
+        )
         _print_progress(
             f"Policy: {args.policy}; benchmark: {args.benchmark_host}; render: local; output: {output}"
         )

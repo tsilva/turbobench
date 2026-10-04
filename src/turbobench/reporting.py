@@ -41,6 +41,31 @@ def render_report(result: dict[str, Any]) -> str:
     lines.extend(
         ("", "No SPS values are aggregated across shapes. Shape 1 is the promo basis.", "")
     )
+    if "scaling" in result:
+        scaling = result["scaling"]
+        rule = scaling["rule"]
+        lines.extend(
+            (
+                "## Adaptive scaling",
+                "",
+                "Counts double from 1. Each provider is compared with its best earlier median SPS. "
+                f"Plateau: {rule['plateau_confirmations']} successive gains below {rule['minimum_gain']:.0%}; "
+                f"downgrade: a drop of at least {rule['downgrade_fraction']:.0%}. "
+                "Continue until both providers qualify. This is a throughput stopping heuristic; "
+                "paired confidence intervals assess speedup at each measured count.",
+                "",
+                f"Stop: `{scaling['stop_reason']}`; saturation established: `{str(scaling['complete']).lower()}`. "
+                f"Safety cap: {rule['max_n_envs']} environments. A cap stop remains diagnostic.",
+                "",
+                "| Envs | Left status | Right status |",
+                "| ---: | :--- | :--- |",
+            )
+        )
+        for row in scaling["history"]:
+            lines.append(
+                f"| {row['n_envs']} | {row['providers']['left']['status']} | {row['providers']['right']['status']} |"
+            )
+        lines.append("")
     lines.extend(("## Validity gates", ""))
     for gate in result["validity"]["gates"]:
         mark = "PASS" if gate["passed"] else "FAIL"

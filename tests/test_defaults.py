@@ -212,3 +212,48 @@ def test_explicit_profile_must_match_policy(local_policy: Path) -> None:
                 "benchmark.example.com",
             )
         )
+
+
+def test_policy_benchmark_uses_pinned_selection_without_media(local_policy: Path, monkeypatch):
+    defaults.configure("benchmark.example.com", local_policy)
+    invocation = args("--policy-benchmark")
+    defaults.apply_comparison_defaults(invocation)
+    assert invocation.policy == local_policy.resolve()
+    assert invocation.benchmark_host == "benchmark.example.com"
+    assert invocation.right.endswith("@0.5.13")
+    seen = []
+
+    def run(invocation, output, progress):
+        assert invocation.policy_benchmark
+        assert not invocation.showcase
+        seen.append(invocation.policy)
+        return output
+
+    monkeypatch.setattr("turbobench.workflow.run_workflow", run)
+    assert main(["compare", "--policy", str(local_policy)]) == 0
+    assert seen == [local_policy]
+    monkeypatch.setattr(
+        defaults,
+        "_policy",
+        lambda path: {
+            "schema": "turbobench.policy-proof/v1",
+            "proof_id": "changed",
+            "bindings": {"profile": "breakout/firstwall-policy-v1"},
+        },
+    )
+    with pytest.raises(ValueError, match="configured policy changed"):
+        defaults.apply_comparison_defaults(args("--policy-benchmark"))
+
+
+def test_policy_timing_can_generate_a_showcase(local_policy, monkeypatch):
+    defaults.configure("benchmark.example.com", local_policy)
+    seen = []
+
+    def run(invocation, output, progress):
+        assert invocation.showcase and invocation.policy_benchmark
+        seen.append(invocation.policy)
+        return output
+
+    monkeypatch.setattr("turbobench.workflow.run_workflow", run)
+    assert main(["compare", "--policy-benchmark", "--showcase"]) == 0
+    assert seen == [local_policy]

@@ -82,9 +82,7 @@ _PARITY_KEYS = frozenset(
     }
 )
 _PROMO_KEYS = frozenset({"kind", "steps", "completion_json"})
-_EXACT_KEYS = frozenset(
-    {"native_transition_exact", "allowed_representation_conversion"}
-)
+_EXACT_KEYS = frozenset({"native_transition_exact", "allowed_representation_conversion"})
 
 
 @dataclass(frozen=True)
@@ -203,9 +201,7 @@ def _parse_document(raw: dict[str, Any], source: str, text: str) -> ProfileDocum
         completion=completion,
         asset_sha256=asset_sha256,
         native_transition_exact=bool(exact["native_transition_exact"]),
-        allowed_representation_conversion=str(
-            exact["allowed_representation_conversion"]
-        ),
+        allowed_representation_conversion=str(exact["allowed_representation_conversion"]),
     )
     _validate(profile, source)
     return ProfileDocument(profile=profile, payload=raw, toml=text)
@@ -250,13 +246,15 @@ def _validate(profile: Profile, source: str) -> None:
         raise ValueError(f"quick parity cannot exceed full parity in {source}")
     if profile.light_pairs > profile.full_pairs:
         raise ValueError(f"light pairs cannot exceed full pairs in {source}")
-    if profile.action_stream_version != "seeded-random-with-directed-prefix/v1":
+    if profile.action_stream_version not in {
+        "seeded-random-with-directed-prefix/v1",
+        "captured-policy/v1",
+    }:
         raise ValueError(f"unsupported action stream in {source}")
     if profile.authority not in profile.providers or not profile.candidates:
         raise ValueError(f"parity providers are incompatible in {source}")
     if any(
-        not profile.accepts(item) or item not in profile.providers
-        for item in profile.candidates
+        not profile.accepts(item) or item not in profile.providers for item in profile.candidates
     ):
         raise ValueError(f"invalid parity candidate in {source}")
     if not profile.checks or any(item not in STANDARD_CHECKS for item in profile.checks):

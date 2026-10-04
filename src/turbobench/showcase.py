@@ -28,6 +28,8 @@ NAMES = {
     "env-vizdoom-turbo": "ViZDoom-turbo",
     "vizdoom": "ViZDoom",
 }
+COMPARISON_STYLE = "comparison-style/v2"
+COMPARISON_STYLES = {"comparison-style/v1", COMPARISON_STYLE}
 
 
 def _pixel(canvas: Image.Image, text: str, center: tuple[int, int], scale: int, color: str) -> None:
@@ -343,7 +345,88 @@ def verify_assets(root: Path, assets: Any, result: Any, diagnostic: bool) -> Non
             raise ValueError("card does not match evidence and diagnostic marking")
 
 
-def scaling_chart(result: Any, *, diagnostic: bool) -> str:
+def scaling_chart(result: Any, *, diagnostic: bool, style: str = COMPARISON_STYLE) -> str:
+    if style == "comparison-style/v1":
+        return _legacy_scaling_chart(result, diagnostic=diagnostic)
+    if style != COMPARISON_STYLE:
+        raise ValueError(f"unsupported comparison style: {style}")
+    rows = sorted(result["comparison"]["shapes"].items(), key=lambda pair: int(pair[0]))
+    peak = max(
+        payload["statistics"][f"median_{side}_sps"]
+        for _, payload in rows
+        for side in ("left", "right")
+    )
+    magnitude = 10 ** math.floor(math.log10(peak / 4))
+    step = next(value * magnitude for value in (1, 2, 5, 10) if value * magnitude >= peak / 4)
+    maximum = math.ceil(peak * 1.12 / step) * step
+    # Give adaptive sweeps enough room for every measured label and paired CI.
+    width = max(1672, len(rows) * 430 + 220) if "scaling" in result else 1672
+    plot_left, plot_right, baseline, plot_height = 140, width - 80, 500, 300
+    colors = {"left": "#acbde1", "right": YELLOW}
+    elements = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="700" viewBox="0 0 {width} 700" role="img" aria-labelledby="title description">',
+        '<title id="title">Environment throughput by environment count</title>',
+        '<desc id="description">Side-by-side upstream and candidate bars show median steps per second on a linear axis starting at zero. Speedups use shape-local paired ratios.</desc>',
+        f'<rect width="100%" height="100%" fill="{BACKGROUND}"/>',
+        '<g font-family="monospace" fill="#acbde1">',
+        '<text x="80" y="60" font-size="32">Throughput by environment count</text>',
+        '<text x="80" y="98" font-size="20">Median steps per second (SPS); higher is faster</text>',
+    ]
+    if diagnostic:
+        elements.append(
+            '<text x="80" y="130" fill="#c8837c" font-size="20">DIAGNOSTIC - no validated performance claim</text>'
+        )
+    for side, x in (("left", 140), ("right", 860)):
+        provider = result["comparison"][side]
+        label = f"{NAMES.get(provider['provider'], provider['provider'])} {provider['version']}"
+        elements.append(
+            f'<rect x="{x}" y="155" width="20" height="20" fill="{colors[side]}"/>'
+            f'<text x="{x + 32}" y="172" font-size="20">{escape(label)}</text>'
+        )
+    for index in range(round(maximum / step) + 1):
+        value = index * step
+        y = baseline - value / maximum * plot_height
+        label = f"{value:,.0f}" if step >= 1 else f"{value:.{-math.floor(math.log10(step))}f}"
+        elements.append(
+            f'<path d="M{plot_left} {y:.3f} H{plot_right}" stroke="{MUTED}" stroke-opacity="0.4"/>'
+            f'<text x="{plot_left - 16}" y="{y + 6:.3f}" text-anchor="end" font-size="18">{label}</text>'
+        )
+    group_width = (plot_right - plot_left) / len(rows)
+    bar_width = min(150, group_width * 0.28)
+    gap = min(24, group_width * 0.06)
+    for index, (shape, payload) in enumerate(rows):
+        center = plot_left + group_width * (index + 0.5)
+        stats = payload["statistics"]
+        elements.append(f'<g data-n-envs="{shape}">')
+        for side, x in (("left", center - gap / 2 - bar_width), ("right", center + gap / 2)):
+            sps = stats[f"median_{side}_sps"]
+            height = sps / maximum * plot_height
+            top = baseline - height
+            elements.append(
+                f'<rect data-provider="{side}" data-sps="{sps}" x="{x:.3f}" y="{top:.6f}" width="{bar_width:.3f}" height="{height:.6f}" fill="{colors[side]}">'
+                f"<title>n_envs={shape}, {side}: {sps:,.1f} SPS</title></rect>"
+                f'<text x="{x + bar_width / 2:.3f}" y="{top - 12:.3f}" text-anchor="middle" fill="{colors[side]}" font-size="22">{sps:,.1f}</text>'
+            )
+        ratio = 1 / stats["median_paired_ratio_left_over_right"]
+        ci = stats["bootstrap"]
+        uncertainty = (
+            f"95% paired CI: {1 / ci['ci'][1]:.2f}x - {1 / ci['ci'][0]:.2f}x"
+            if ci
+            else "One sample; no confidence interval"
+        )
+        elements.append(
+            f'<text x="{center:.3f}" y="540" text-anchor="middle" font-size="24">n_envs={shape}</text>'
+            f'<text x="{center:.3f}" y="580" text-anchor="middle" fill="{YELLOW}" font-size="22">{ratio:.2f}x speedup</text>'
+            f'<text x="{center:.3f}" y="612" text-anchor="middle" font-size="17">{escape(uncertainty)}</text></g>'
+        )
+    elements.append(
+        f'<text x="80" y="670" font-size="16" fill="{MUTED}">Bars: shape-local median SPS. Speedup: paired candidate/upstream ratio; counts are not aggregated.</text></g></svg>'
+    )
+    return "\n".join(elements) + "\n"
+
+
+def _legacy_scaling_chart(result: Any, *, diagnostic: bool) -> str:
+    """Retain the exact v1 SVG for verification of already archived proofs."""
     rows = sorted(result["comparison"]["shapes"].items(), key=lambda pair: int(pair[0]))
     ratios = [
         1 / payload["statistics"]["median_paired_ratio_left_over_right"] for _, payload in rows

@@ -93,10 +93,7 @@ def next_version(version: str) -> str:
         return f"{base}{pre}{int(match.group('pre_number')) + 1}"
     if dev := match.group("dev_number"):
         return f"{base}.dev{int(dev) + 1}"
-    return (
-        f"{match.group('major')}.{match.group('minor')}."
-        f"{int(match.group('patch')) + 1}"
-    )
+    return f"{match.group('major')}.{match.group('minor')}.{int(match.group('patch')) + 1}"
 
 
 def check_version(args: argparse.Namespace) -> None:
@@ -118,8 +115,7 @@ def check_version(args: argparse.Namespace) -> None:
     failures = {key: value for key, value in actual.items() if value != wanted[key]}
     if failures:
         details = ", ".join(
-            f"{key}={value!r}, expected {wanted[key]!r}"
-            for key, value in failures.items()
+            f"{key}={value!r}, expected {wanted[key]!r}" for key, value in failures.items()
         )
         raise SystemExit(f"release metadata mismatch for {expected}: {details}")
     print(json.dumps({"package": PYPI_PROJECT, "version": expected}, indent=2))
@@ -176,9 +172,7 @@ def select_release_version(
 
 def replace_project_version(path: Path, current: str, target: str) -> None:
     text = path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        rf'(?ms)(^\[project\]\n.*?^version\s*=\s*"){re.escape(current)}(")'
-    )
+    pattern = re.compile(rf'(?ms)(^\[project\]\n.*?^version\s*=\s*"){re.escape(current)}(")')
     updated, count = pattern.subn(rf"\g<1>{target}\g<2>", text, count=1)
     if count != 1:
         raise SystemExit(f"could not update [project] version in {path}")
@@ -276,9 +270,7 @@ def wheel_audit(wheel: Path, version: str) -> dict[str, object]:
         names = archive.namelist()
         metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
         wheel_names = [name for name in names if name.endswith(".dist-info/WHEEL")]
-        entry_point_names = [
-            name for name in names if name.endswith(".dist-info/entry_points.txt")
-        ]
+        entry_point_names = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
         metadata = (
             BytesParser().parsebytes(archive.read(metadata_names[0]))
             if len(metadata_names) == 1
@@ -295,6 +287,10 @@ def wheel_audit(wheel: Path, version: str) -> dict[str, object]:
             else ""
         )
     checks = {
+        "has_workflow_runtime_metadata": all(
+            f"{IMPORT_NAME}/workflow_runtime/{name}" in names
+            for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE")
+        ),
         "expected_filename": wheel.name == f"{DIST_NAME}-{version}-py3-none-any.whl",
         "one_metadata_file": len(metadata_names) == 1,
         "one_wheel_file": len(wheel_names) == 1,
@@ -449,9 +445,7 @@ def wait_pypi(args: argparse.Namespace) -> None:
             print(
                 json.dumps(
                     {
-                        "url": (
-                            f"https://pypi.org/project/{PYPI_PROJECT}/{args.version}/"
-                        ),
+                        "url": (f"https://pypi.org/project/{PYPI_PROJECT}/{args.version}/"),
                         "version": args.version,
                         "files": sorted(found),
                     },
@@ -460,15 +454,12 @@ def wait_pypi(args: argparse.Namespace) -> None:
             )
             return
         print(
-            f"waiting for {PYPI_PROJECT}=={args.version} files "
-            f"({attempt + 1}/{args.attempts})",
+            f"waiting for {PYPI_PROJECT}=={args.version} files ({attempt + 1}/{args.attempts})",
             flush=True,
         )
         if attempt + 1 < args.attempts:
             time.sleep(args.interval)
-    raise SystemExit(
-        f"{PYPI_PROJECT}=={args.version} did not expose the complete file set on PyPI"
-    )
+    raise SystemExit(f"{PYPI_PROJECT}=={args.version} did not expose the complete file set on PyPI")
 
 
 def main() -> None:

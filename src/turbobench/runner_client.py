@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -28,6 +29,16 @@ def invoke_runner(
     source_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="turbobench-request-") as raw_temp:
         temporary = Path(raw_temp)
+        if source_root.name != "src":
+            # An installed CLI must not shadow the provider's dependency lock
+            # by putting its entire site-packages directory first on sys.path.
+            isolated_source = temporary / "harness"
+            shutil.copytree(
+                Path(__file__).resolve().parent,
+                isolated_source / "turbobench",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            source_root = isolated_source
         request_path = temporary / "request.json"
         response_path = temporary / "response.json"
         write_json(request_path, request)

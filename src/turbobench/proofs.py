@@ -16,6 +16,12 @@ PROOF_SCHEMAS = {
     for kind in ("policy", "benchmark", "showcase")
     for version in (1, 2)
 }
+PROOF_SCHEMAS |= {
+    "turbobench.benchmark-proof/v3",
+    "turbobench.policy-benchmark-proof/v1",
+    "turbobench.showcase-proof/v3",
+}
+
 LEGACY_SCHEMA_FILES = {
     "policy-proof-v1.json",
     "benchmark-proof-v1.json",
@@ -24,14 +30,27 @@ LEGACY_SCHEMA_FILES = {
 }
 
 V2_SCHEMA_FILES = LEGACY_SCHEMA_FILES | {
-    "policy-proof-v2.json", "benchmark-proof-v2.json", "showcase-proof-v2.json",
-    "comparison-request-v2.json", "resolved-workload-v1.json",
-    "policy-contract-v1.json", "environment-declaration-v1.json",
+    "policy-proof-v2.json",
+    "benchmark-proof-v2.json",
+    "showcase-proof-v2.json",
+    "comparison-request-v2.json",
+    "resolved-workload-v1.json",
+    "policy-contract-v1.json",
+    "environment-declaration-v1.json",
 }
 
 
 def _schema_files(schema: str) -> set[str]:
     # A future schema addition must not change existing proof inventories.
+    if schema == "turbobench.showcase-proof/v3":
+        return _schema_files("turbobench.benchmark-proof/v3") | {"showcase-proof-v3.json"}
+    if schema in {"turbobench.benchmark-proof/v3", "turbobench.policy-benchmark-proof/v1"}:
+        return V2_SCHEMA_FILES | {
+            "benchmark-proof-v3.json",
+            "comparison-request-v3.json",
+            "resolved-workload-v2.json",
+            "policy-benchmark-proof-v1.json",
+        }
     return V2_SCHEMA_FILES if schema.endswith("/v2") else LEGACY_SCHEMA_FILES
 
 
@@ -41,6 +60,8 @@ def validate_document(document: dict[str, Any]) -> None:
     allowed = PROOF_SCHEMAS | {
         "turbobench.comparison-request/v1",
         "turbobench.comparison-request/v2",
+        "turbobench.comparison-request/v3",
+        "turbobench.resolved-workload/v2",
         "turbobench.resolved-workload/v1",
         "turbobench.policy-contract/v1",
         "turbobench.environment-declaration/v1",
@@ -176,6 +197,10 @@ def verify_proof(root: Path) -> dict[str, Any]:
 
             request = read_json(root / "request.json")
             validate_request(request)
+            if (manifest["schema"] == "turbobench.benchmark-proof/v3") != (
+                request["schema"] == "turbobench.comparison-request/v3"
+            ):
+                raise ValueError("benchmark proof version differs from action protocol")
             result = read_json(root / "result.json")
             expected_bindings = {
                 "request_id": request["request_id"],
@@ -183,7 +208,10 @@ def verify_proof(root: Path) -> dict[str, Any]:
                 "benchmark_machine": read_json(root / "benchmark-machine.json"),
                 "mode": "smoke" if request["smoke"] else "full",
             }
-            if manifest["schema"].endswith("/v2"):
+            if manifest["schema"] in {
+                "turbobench.benchmark-proof/v2",
+                "turbobench.benchmark-proof/v3",
+            }:
                 expected_bindings["workload_sha256"] = canonical_json_hash(
                     request["resolved_workload"]
                 )
@@ -207,6 +235,10 @@ def verify_proof(root: Path) -> dict[str, Any]:
                 or list((root / "media").glob("*"))
             ):
                 raise ValueError("measurement host emitted showcase assets")
+        elif manifest["schema"] == "turbobench.policy-benchmark-proof/v1":
+            from turbobench.workflow import verify_policy_benchmark
+
+            verify_policy_benchmark(root, bindings)
         else:
             from turbobench.workflow import verify_showcase
 

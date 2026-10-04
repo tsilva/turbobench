@@ -402,7 +402,8 @@ class Adapter:
         self._reset_generations.fill(0)
         self._terminal_mask.fill(False)
         self._render_cache = None
-        return self.env.reset(seed=seed, options=options)
+        replicated = self.profile.action_stream_version == "captured-policy/v1"
+        return self.env.reset(seed=[seed] * self.num_envs if replicated else seed, options=options)
 
     def selective_reset(self, mask: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
         if self._initial_seed is None:
@@ -1769,7 +1770,10 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
         else:
             repetitions = []
             for repetition in range(repetition_count):
-                adapter.initial_reset(int(request.get("seed", 123)) + repetition)
+                seed = int(request.get("seed", 123))
+                adapter.initial_reset(
+                    seed if request.get("replicate_initial_seed") else seed + repetition
+                )
                 started = time.perf_counter_ns()
                 _rollout(adapter, prepared)
                 elapsed_ns = time.perf_counter_ns() - started
@@ -1797,6 +1801,8 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                 "construction",
                 "initial_reset",
                 "action_generation",
+                "policy_inference",
+                "trajectory_recording",
                 "warmup",
                 "correctness",
                 "rendering",
@@ -2047,6 +2053,23 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
 
     profile = request_profile(request)
     operation = request["operation"]
+    if profile.action_stream_version == "captured-policy/v1" and operation in {
+        "trace",
+        "benchmark",
+    }:
+        from turbobench.profiles import action_stream_hash, canonical_actions
+        from turbobench.workloads import policy_benchmark_settings
+
+        expected_actions = canonical_actions(profile, int(request["shape"]))
+        if (
+            request["actions"] != expected_actions.tolist()
+            or request["action_stream_sha256"] != action_stream_hash(profile, expected_actions)
+            or any(
+                request.get(key) != value
+                for key, value in policy_benchmark_settings(profile).items()
+            )
+        ):
+            raise ValueError("runner policy actions/reset differ from locked workload")
     if operation in _WORKLOAD_OPERATIONS:
         require_request_matches_spec(request, request.get("execution_spec", {}))
         require_attestation(request.get("execution_spec", {}), request.get("contract_attestation"))
@@ -2076,6 +2099,11 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
             "workload_executed": False,
             "turbo_contract_report": exc.report,
         }
+    if profile.action_stream_version == "captured-policy/v1" and operation in {
+        "trace",
+        "benchmark",
+    }:
+        payload["policy_reset"] = policy_benchmark_settings(profile)
     payload["runner"] = {
         "pid": os.getpid(),
         "operation": operation,

@@ -1,7 +1,9 @@
 # Benchmark and showcase in one command
 
-Run this workflow from the **render machine**. It stages the exact TurboBench
-source and frozen dependency lock over SSH, measures on the benchmark machine,
+Run this workflow from the **render machine**. Installed releases carry the
+frozen workflow dependency lock, install the same published TurboBench version
+on the benchmark host, and verify matching harness source hashes. Development
+checkouts instead stage their exact source and frozen lock over SSH. It measures on the benchmark machine,
 verifies the downloaded immutable proof, then replays and renders locally.
 The benchmark host does not create charts, videos, or raw-frame artifacts.
 Nothing is pushed or published.
@@ -44,8 +46,9 @@ Use `--output turbobench-results/breakout-full` when you want a fixed path,
 including for resumable runs. Keep the benchmark host idle during
 an official measurement; the load gate waits up to 15 minutes. Stop other jobs
 through their normal controls before starting. Full measurements use the
-protocol's environment counts **1, 16, 32**, one warmup pair, and seven alternating
-AB/BA pairs with three repetitions per invocation. Shape-local confidence
+protocol's adaptive environment counts **1, 2, 4, 8, ...**, one warmup pair, and
+seven alternating AB/BA pairs with three repetitions per invocation at each count.
+Counts continue until both providers plateau or downgrade; see the stopping rule below. Shape-local confidence
 intervals use a deterministic paired bootstrap. Exact package references make
 the tested provider versions explicit. Use a different eligible candidate
 version deliberately when comparing a newer release; its locked policy excerpt
@@ -59,7 +62,7 @@ replacing its contents requires an explicit `configure --policy PATH` selection.
 The comparison definition is inferred from the saved policy game. It pins the
 upstream authority/version; the candidate/version comes from saved training
 metadata. FirstWall resolves to `breakout/policy-v1`, protocol
-`paired-environment/v1`, `stable-retro@1.0.1`, and
+`paired-environment/v2`, `stable-retro@1.0.1`, and
 `env-breakoutatari2600-turbo-native@0.5.13`. The workload ID includes a digest
 of the recipe-derived settings, exact provider declarations, and comparison
 rules. No policy-specific TOML needs to be maintained.
@@ -98,6 +101,89 @@ source require a new output. Completed outputs are immutable; they are never
 overwritten. Local provider checkout/artifact selectors and workload overrides
 are deliberately unsupported in the two-host release workflow. Independent
 `compare`, `parity`, `promo`, and legacy bundle verification remain available.
+
+## Adaptive environment counts
+
+New full policy benchmarks and showcases use versioned v2 comparison protocols.
+Start at `n_envs=1`, then double: `2,4,8,16,32,64,...`. Before timing a new count,
+both providers must pass isolated contract validation and matched correctness.
+Each measured count keeps the full seven-pair, three-repetition design and its
+paired speedup confidence interval. Policy inference remains outside timing.
+
+The stopping rule compares **each provider's median SPS with its own best
+previous median**, rather than comparing speedup ratios. A provider plateaus
+when two successive counts gain less than 3%; a decline of at least 5% qualifies
+as a downgrade immediately. A subsequent gain of at least 3% clears its low-gain
+streak. Continue while either provider has not yet qualified. Retain every measured
+count, including the confirming plateau or slower count, in the grouped bars.
+The rule is a declared throughput heuristic; it does not claim a statistical
+confidence interval for the location of a throughput peak.
+
+The locked safety cap is 1024 environments. Reaching it without both providers
+qualifying is `safety_cap`, not evidence of saturation: the measurement remains
+diagnostic and cannot produce an official showcase. The coordinator preserves
+that benchmark proof under `.partial` for inspection. Resource or parity failures
+also preserve partial evidence without claiming a completed search.
+
+`result/v4` and `verification/scaling.json` record the rule, medians, gains,
+low-gain streaks, provider statuses and stopping reason. Verification recomputes
+the entire decision history from bound raw measurements, rejects missing/skipped
+counts, premature stops and evidence past the required stop. Resuming the same
+partial request reuses its completed shape measurements and makes the same next
+count decision. Smoke still measures only `n_envs=1,2` and tests the pipeline;
+it does not search for saturation. Explicit historical profiles keep their
+versioned fixed counts, and existing completed bundles are unchanged.
+
+## Benchmark the locked policy without videos
+
+Select a verified policy package and pin its proof ID in local defaults:
+
+```bash
+uv run --frozen turbobench configure --benchmark-host benchmark.example.com --policy /path/to/verified-policy-package
+uv run --frozen turbobench compare --policy-benchmark --right env-breakoutatari2600-turbo-native@latest
+```
+
+An explicit `compare --policy PATH --benchmark-host HOST` also selects this mode.
+Use `--smoke` for the diagnostic pipeline check; omit it for seven alternating
+pairs with three repetitions at each adaptive `n_envs` count. The complete locked capture is
+used for both correctness and timing. It is never silently shortened. The model
+is not executed during measurement: the imported effective policy actions are
+collapsed from raw frames to decisions at the saved training frame skip.
+
+`paired-policy/v2` freezes the checkpoint, recipe, action digest, captured reset
+seed and no-op prefix, decision count, and provider declarations in
+`resolved-workload/v2` and `comparison-request/v3`. Every lane starts from the
+same captured seed and follows the same effective actions. Each timing
+repetition resets to that seed; the initial seeded no-op reset, warmup, inference,
+correctness hashing, trajectory recording, rendering and encoding are excluded.
+Stepping, observation preprocessing, IPC, infos, terminal detection and required
+selective resets are included. Training frame skip, stack and preprocessing are
+preserved; task/context/reward wrappers are excluded, buffers use `obs_copy=copy`,
+and threads equal the environment count. Correlated lanes are an explicit
+workload choice, not an estimate of independent policy performance.
+
+Both providers must pass the entire decision-level trace at every measured
+shape, then hash-only raw capture replay on the benchmark host. A partial
+import remains partial; neither a matching excerpt nor one successful episode
+establishes full-game parity or success rate. Standard canonical parity profiles
+remain unchanged. Future seeded-action showcases also use adaptive scaling;
+archived v1 comparison protocols retain their fixed `1,16,32` counts and verification.
+
+The output is a portable `policy-benchmark-proof/v1` containing the selected
+`policy/`, a `benchmark-proof/v3` under `benchmark/`, a grouped bar chart and a
+method report. No video or image-frame recording is generated. Existing trace
+records retain observation/frame digests, rewards, selected infos and lifecycle
+evidence for auditing; they are not pixel trajectories for future encoding.
+Future video generation requires a separate untimed replay of the bound actions.
+Verify with `turbobench verify OUTPUT`. Replacing a configured package is rejected
+until explicitly selected again with `configure --policy PATH`. A new model
+still needs an untimed inference capture imported through `policy-pack` below.
+
+Add `--showcase` to `--policy-benchmark` to render the video and animated WebP
+from the same policy-timed measurements. Rendering follows an untimed, exact
+cross-host replay and produces `showcase-proof/v3` with the `benchmark-proof/v3`
+child. All inference and rendering remain excluded from timing. The README
+snippet identifies captured policy controls rather than seeded random controls.
 
 ## Import another captured GradLab policy
 
@@ -153,7 +239,7 @@ comparison/
   benchmark/
     manifest.json              # turbobench.benchmark-proof/v2
     request.json               # turbobench.comparison-request/v2
-    result.json                # result/v2, or smoke-only result/v3
+    result.json                # adaptive full result/v4, or smoke-only result/v3
     resolved-lock.json
     benchmark-machine.json
     profile.toml                # generated pointer to the frozen workload
@@ -177,7 +263,7 @@ comparison/
     comparison.webp            # full-resolution lossless, 20 fps, loop=0
     poster.png
     card.png
-  chart.svg                    # candidate/upstream speedup and inverted 95% CI
+  chart.svg                    # paired provider SPS bars per n_envs, speedup and 95% CI
   report.md                    # hardware, policy link, method, limits, SPS table
   README-snippet.md
   schemas/                     # versioned JSON schema documents (also in children)

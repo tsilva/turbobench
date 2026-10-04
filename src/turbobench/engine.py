@@ -48,6 +48,7 @@ from turbobench.runtime import (
     prepare_runtime,
     runtimes_are_isolated,
 )
+from turbobench.scaling import scaling_progress, scaling_rule
 from turbobench.stats import paired_statistics, reciprocal_statistics
 from turbobench.system import host_record, wait_for_load
 from turbobench.util import canonical_json_hash, read_json, redact, write_json
@@ -216,126 +217,139 @@ def run_comparison_resolved(
     write_json(partial / "resolved-lock.json", lock)
 
     shapes = _selected_shapes(profile, options)
-    step_count = _selected_steps(profile, options)
-    options.report_progress(
-        f"Starting {profile.id}: shapes {', '.join(map(str, shapes))}, {step_count} benchmark steps"
+    adaptive = scaling_rule(profile) is not None and not (
+        options.quick or options.smoke or options.shapes
     )
+    if adaptive and options.parity_receipts:
+        raise ValueError("adaptive scaling requires executed correctness at each selected count")
+    step_count = _selected_steps(profile, options)
+    schedule = (
+        f"adaptive n_envs doubling from 1 (safety cap {shapes[-1]})"
+        if adaptive
+        else f"shapes {', '.join(map(str, shapes))}"
+    )
+    options.report_progress(f"Starting {profile.id}: {schedule}, {step_count} benchmark steps")
 
     contract_attestations: dict[str, dict[str, Any]] = {"left": {}, "right": {}}
     contract_reports: dict[str, dict[str, Any]] = {"left": {}, "right": {}}
-    for side, provider in (("left", left), ("right", right)):
-        for shape in shapes:
-            options.report_progress(
-                f"Phase-isolated contract probe: {side} provider, shape {shape}"
-            )
-            attestation = _contract_attestation(
-                partial,
-                provider,
-                profile,
-                shape,
-                assets,
-                asset_record,
-                side=side,
-            )
-            contract_attestations[side][str(shape)] = attestation
-            contract_reports[side][str(shape)] = attestation["contract_report"]
-    write_json(
-        partial / "verification" / "turbo-contract.json",
-        {
-            "schema": "turbobench.contract-attestations/v1",
-            "protocol": EXECUTION_PROTOCOL,
-            "attestations": contract_attestations,
-        },
-    )
-    failed_v2 = [
-        f"{side}/shape-{shape}"
-        for side, reports in contract_reports.items()
-        for shape, report in reports.items()
-        if not report.get("passed")
-    ]
-    if failed_v2:
-        raise RuntimeError(
-            f"{', '.join(failed_v2)} provider configuration(s) failed validation; "
-            "completed attestations were recorded and no dependent workload was executed"
-        )
-
-    parity_gate = None
-    if options.parity_receipts:
-        from turbobench.parity import parity_gate_for_benchmark
-
-        parity_gate = parity_gate_for_benchmark(
-            options.parity_receipts, profile, (left, right), shapes
-        )
-        if not parity_gate["passed"]:
-            raise ValueError(
-                "supplied parity receipt is incompatible: " + "; ".join(parity_gate["errors"])
-            )
-
     correctness: dict[str, Any] = {}
     action_records: dict[str, Any] = {}
-    for shape in shapes:
-        trace_actions = canonical_actions(profile, shape, profile.measurement_steps)
-        trace_hash = action_stream_hash(profile, trace_actions)
-        action_records[str(shape)] = {
-            "version": profile.action_stream_version,
-            "seed": profile.run_seed,
-            "validation_sha256": trace_hash,
-            "validation_steps": profile.measurement_steps,
-        }
-        reused = parity_gate["checks"].get(str(shape)) if parity_gate is not None else None
-        if reused is None:
-            options.report_progress(f"Correctness trace for shape {shape}: left provider")
-            left_trace = _trace(
-                partial,
-                left,
-                profile,
-                shape,
-                trace_actions,
-                trace_hash,
-                assets,
-                side="left",
-                execution_spec_record=_execution_spec_for(left, profile, shape, asset_record),
-                contract_attestation=contract_attestations["left"][str(shape)],
-            )
-            options.report_progress(f"Correctness trace for shape {shape}: right provider")
-            right_trace = _trace(
-                partial,
-                right,
-                profile,
-                shape,
-                trace_actions,
-                trace_hash,
-                assets,
-                side="right",
-                execution_spec_record=_execution_spec_for(right, profile, shape, asset_record),
-                contract_attestation=contract_attestations["right"][str(shape)],
-            )
-            correctness[str(shape)] = {
-                **compare_traces(left_trace, right_trace, profile),
-                "source": "executed pair",
-            }
-        else:
-            correctness[str(shape)] = reused
-        status = "passed" if correctness[str(shape)]["passed"] else "failed"
-        options.report_progress(f"Correctness for shape {shape}: {status}")
-    write_json(
-        partial / "verification" / "correctness.json",
-        {"schema": "turbobench.correctness/v2", "shapes": correctness},
-    )
-    if parity_gate is not None:
+
+    def prepare_shapes(requested_shapes: tuple[int, ...]) -> None:
+        for side, provider in (("left", left), ("right", right)):
+            for shape in requested_shapes:
+                options.report_progress(
+                    f"Phase-isolated contract probe: {side} provider, shape {shape}"
+                )
+                attestation = _contract_attestation(
+                    partial,
+                    provider,
+                    profile,
+                    shape,
+                    assets,
+                    asset_record,
+                    side=side,
+                )
+                contract_attestations[side][str(shape)] = attestation
+                contract_reports[side][str(shape)] = attestation["contract_report"]
         write_json(
-            partial / "verification" / "parity-gate.json",
+            partial / "verification" / "turbo-contract.json",
             {
-                **{key: value for key, value in parity_gate.items() if key != "checks"},
-                "shapes": {
-                    shape: {
-                        "source": check["source"],
-                        "receipt_ids": check.get("receipt_ids", []),
-                    }
-                    for shape, check in correctness.items()
-                },
+                "schema": "turbobench.contract-attestations/v1",
+                "protocol": EXECUTION_PROTOCOL,
+                "attestations": contract_attestations,
             },
         )
+        failed_v2 = [
+            f"{side}/shape-{shape}"
+            for side, reports in contract_reports.items()
+            for shape, report in reports.items()
+            if not report.get("passed")
+        ]
+        if failed_v2:
+            raise RuntimeError(
+                f"{', '.join(failed_v2)} provider configuration(s) failed validation; "
+                "completed attestations were recorded and no dependent workload was executed"
+            )
+
+        parity_gate = None
+        if options.parity_receipts:
+            from turbobench.parity import parity_gate_for_benchmark
+
+            parity_gate = parity_gate_for_benchmark(
+                options.parity_receipts, profile, (left, right), requested_shapes
+            )
+            if not parity_gate["passed"]:
+                raise ValueError(
+                    "supplied parity receipt is incompatible: " + "; ".join(parity_gate["errors"])
+                )
+
+        for shape in requested_shapes:
+            trace_actions = canonical_actions(profile, shape, profile.measurement_steps)
+            trace_hash = action_stream_hash(profile, trace_actions)
+            action_records[str(shape)] = {
+                "version": profile.action_stream_version,
+                "seed": profile.run_seed,
+                "validation_sha256": trace_hash,
+                "validation_steps": profile.measurement_steps,
+            }
+            reused = parity_gate["checks"].get(str(shape)) if parity_gate is not None else None
+            if reused is None:
+                options.report_progress(f"Correctness trace for shape {shape}: left provider")
+                left_trace = _trace(
+                    partial,
+                    left,
+                    profile,
+                    shape,
+                    trace_actions,
+                    trace_hash,
+                    assets,
+                    side="left",
+                    execution_spec_record=_execution_spec_for(left, profile, shape, asset_record),
+                    contract_attestation=contract_attestations["left"][str(shape)],
+                )
+                options.report_progress(f"Correctness trace for shape {shape}: right provider")
+                right_trace = _trace(
+                    partial,
+                    right,
+                    profile,
+                    shape,
+                    trace_actions,
+                    trace_hash,
+                    assets,
+                    side="right",
+                    execution_spec_record=_execution_spec_for(right, profile, shape, asset_record),
+                    contract_attestation=contract_attestations["right"][str(shape)],
+                )
+                correctness[str(shape)] = {
+                    **compare_traces(left_trace, right_trace, profile),
+                    "source": "executed pair",
+                }
+            else:
+                correctness[str(shape)] = reused
+            status = "passed" if correctness[str(shape)]["passed"] else "failed"
+            options.report_progress(f"Correctness for shape {shape}: {status}")
+        write_json(
+            partial / "verification" / "correctness.json",
+            {"schema": "turbobench.correctness/v2", "shapes": correctness},
+        )
+        if parity_gate is not None:
+            write_json(
+                partial / "verification" / "parity-gate.json",
+                {
+                    **{key: value for key, value in parity_gate.items() if key != "checks"},
+                    "shapes": {
+                        shape: {
+                            "source": check["source"],
+                            "receipt_ids": check.get("receipt_ids", []),
+                        }
+                        for shape, check in correctness.items()
+                    },
+                },
+            )
+
+    if not adaptive:
+        prepare_shapes(shapes)
 
     options.report_progress("Checking system load")
     load = wait_for_load(
@@ -348,7 +362,12 @@ def run_comparison_resolved(
     pair_count = (
         1 if options.smoke else (profile.light_pairs if options.quick else profile.full_pairs)
     )
+    scaling = None
     for shape in shapes:
+        if adaptive:
+            prepare_shapes((shape,))
+            if not correctness[str(shape)]["passed"]:
+                raise RuntimeError(f"adaptive correctness failed at n_envs={shape}; timing skipped")
         actions = canonical_actions(profile, shape, step_count)
         stream_hash = action_stream_hash(profile, actions)
         action_records[str(shape)].update(
@@ -455,6 +474,20 @@ def run_comparison_resolved(
             f"Shape {shape} complete: {comparison_shapes[str(shape)]['statistics']['outcome']}"
         )
 
+        if adaptive:
+            scaling = scaling_progress(profile, comparison_shapes)
+            write_json(partial / "verification" / "scaling.json", scaling)
+            statuses = scaling["history"][-1]["providers"]
+            options.report_progress(
+                f"Scaling at n_envs={shape}: left={statuses['left']['status']}, "
+                f"right={statuses['right']['status']}"
+            )
+            if scaling["stop_reason"] is not None:
+                options.report_progress(f"Scaling stopped: {scaling['stop_reason']}")
+                break
+    if adaptive:
+        shapes = tuple(sorted(map(int, comparison_shapes)))
+
     write_json(
         partial / "verification" / "order-reversal.json",
         {
@@ -488,6 +521,7 @@ def run_comparison_resolved(
         contract_reports,
         contract_attestations,
         _evidence_attestations_match(partial, shapes, contract_attestations),
+        scaling=scaling,
     )
     validity_passed = all(gate.passed for gate in gates)
     diagnostic_reasons = [gate.detail for gate in gates if not gate.passed]
@@ -498,7 +532,11 @@ def run_comparison_resolved(
     shape_one = comparison_shapes.get("1")
     headline_outcome = shape_one["statistics"]["outcome"] if shape_one else "inconclusive"
     result = {
-        "schema": "turbobench.result/v3" if options.smoke else RESULT_SCHEMA,
+        "schema": "turbobench.result/v4"
+        if adaptive
+        else "turbobench.result/v3"
+        if options.smoke
+        else RESULT_SCHEMA,
         "sampling": {
             "mode": "smoke" if options.smoke else "quick" if options.quick else "full",
             "pairs": pair_count,
@@ -536,6 +574,9 @@ def run_comparison_resolved(
             "source_sha256": harness_source_hash(),
         },
     }
+
+    if scaling is not None:
+        result["scaling"] = scaling
 
     replay_temp = partial / ".replay-frames"
     if (
@@ -684,6 +725,8 @@ def _base_request(
     shape: int,
     assets: dict[str, Any],
 ) -> dict[str, Any]:
+    from turbobench.workloads import policy_benchmark_settings
+
     speed = 1.0
     if provider.adapter == "fake":
         with suppress(IndexError, ValueError):
@@ -704,6 +747,7 @@ def _base_request(
         "assets": assets,
         "fake_speed": speed,
         "seed": 123,
+        **policy_benchmark_settings(profile),
     }
 
 
@@ -716,6 +760,10 @@ def _execution_spec_for(
     frame_skip: int | None = None,
     noop_reset_max: int = 0,
 ) -> dict[str, Any]:
+    from turbobench.workloads import policy_benchmark_settings
+
+    if frame_skip is None:
+        noop_reset_max = policy_benchmark_settings(profile).get("noop_reset_max", noop_reset_max)
     host = host_record()
     return execution_spec(
         provider=provider.portable(),
@@ -835,6 +883,7 @@ def _contract_attestation(
         }
         if frame_skip is not None:
             request["frame_skip"] = frame_skip
+            request["noop_reset_max"] = noop_reset_max
         if noop_reset_max:
             request["noop_reset_max"] = noop_reset_max
         response = invoke_runner(
@@ -1027,6 +1076,8 @@ def _validity_gates(
     contract_reports: dict[str, dict[str, Any]],
     contract_attestations: dict[str, dict[str, Any]],
     evidence_attestations_match: bool,
+    *,
+    scaling: dict[str, Any] | None = None,
 ) -> list[Gate]:
     harness_left = {
         line
@@ -1104,10 +1155,18 @@ def _validity_gates(
         ),
         Gate(
             "official sample design",
-            shapes == profile.measurement_shapes
+            (
+                bool(scaling["complete"])
+                if scaling is not None
+                else shapes == profile.measurement_shapes
+            )
             and profile.warmup_pairs == 1
             and pair_count == profile.full_pairs,
-            "configured full shapes, warmups, and alternating pairs",
+            "adaptive scaling completed, warmups, and alternating pairs"
+            if scaling is not None and scaling["complete"]
+            else "adaptive scaling hit safety cap before saturation"
+            if scaling is not None
+            else "configured full shapes, warmups, and alternating pairs",
         ),
         Gate(
             "system load",
@@ -1189,6 +1248,9 @@ def _promo_replay(
         **_base_request(provider, profile, 1, assets),
         "operation": "promo",
         "frame_skip": 1,
+        "noop_reset_max": 0,
+        "seed": 123,
+        "replicate_initial_seed": False,
         "promo_actions": actions,
         "promo_action_sha256": stream_hash,
         "output_frames": str(frames),

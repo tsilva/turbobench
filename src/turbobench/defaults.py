@@ -101,7 +101,8 @@ def _training_provider(path: Path, profile: Any) -> str:
 
 
 def apply_comparison_defaults(args: Any) -> None:
-    if args.showcase:
+    policy_workflow = args.showcase or getattr(args, "policy_benchmark", False)
+    if policy_workflow:
         config = load_config()
         proof = None
         if args.policy is None and "policy" in config:
@@ -131,7 +132,7 @@ def apply_comparison_defaults(args: Any) -> None:
         _host(args.benchmark_host)
     if not args.profile:
         raise ValueError("provide a profile ID, or use --showcase with a verified policy package")
-    if args.showcase and proof["schema"] == "turbobench.policy-proof/v2":
+    if policy_workflow and proof["schema"] == "turbobench.policy-proof/v2":
         from turbobench.workloads import preliminary_workload, profile_from_workload
 
         profile = profile_from_workload(
@@ -141,7 +142,7 @@ def apply_comparison_defaults(args: Any) -> None:
         profile = get_profile(args.profile)
     args.left = args.left or f"{profile.authority}@{profile.authority_version}"
     if not args.right:
-        if args.showcase:
+        if policy_workflow:
             args.right = _training_provider(args.policy, profile)
         elif len(profile.candidates) == 1:
             args.right = f"{profile.candidates[0]}@latest"

@@ -210,14 +210,26 @@ def resolve_workload(
     protocol: dict[str, Any],
     policy: dict[str, Any],
     declarations: dict[str, Any],
+    policy_actions: list[list[str]] | None = None,
 ) -> dict[str, Any]:
-    if definition != comparison_definition(definition["id"]) or protocol != _resource(
-        "comparison_protocols", definition["protocol"]
+    legacy_id = "paired-policy/v1" if policy_actions is not None else definition["protocol"]
+    protocol_id = protocol.get("id")
+    if (
+        protocol_id not in {legacy_id, legacy_id.removesuffix("/v1") + "/v2"}
+        or definition != comparison_definition(definition["id"])
+        or protocol != _resource("comparison_protocols", protocol_id)
     ):
         raise ValueError("comparison rules differ from their trusted version")
     if policy.get("schema") != "turbobench.policy-contract/v1":
         raise ValueError("unsupported normalized policy contract")
     configuration = _configuration(definition, protocol, policy)
+    if policy_actions is not None:
+        policy_decisions(policy, policy_actions)
+        configuration["run"] = {
+            **configuration["run"],
+            "measurement_steps": policy["decisions"],
+            "seed": policy["selection"]["seed"],
+        }
     for declaration in declarations.values():
         check_declaration(declaration, configuration, definition["assets"])
     sources = {
@@ -243,14 +255,33 @@ def resolve_workload(
             "capability_validation": "declarations",
         },
     }
+    if policy_actions is not None:
+        workload["schema"] = "turbobench.resolved-workload/v2"
+        workload["policy_actions"] = deepcopy(policy_actions)
+        workload["source_sha256"]["policy_actions"] = canonical_json_hash(policy_actions)
+        workload["field_sources"]["run"] = "protocol.run + policy.decisions + policy.selection.seed"
     workload["id"] = definition["id"] + "/" + canonical_json_hash(workload)
     return workload
 
 
-def preliminary_workload(policy: dict[str, Any], identity: str | None = None) -> dict[str, Any]:
+def preliminary_workload(
+    policy: dict[str, Any],
+    identity: str | None = None,
+    *,
+    policy_actions: list[list[str]] | None = None,
+) -> dict[str, Any]:
     definition = comparison_definition(identity or definition_for_policy(policy))
     return resolve_workload(
-        definition, _resource("comparison_protocols", definition["protocol"]), policy, {}
+        definition,
+        _resource(
+            "comparison_protocols",
+            "paired-policy/v2"
+            if policy_actions is not None
+            else definition["protocol"].removesuffix("/v1") + "/v2",
+        ),
+        policy,
+        {},
+        policy_actions,
     )
 
 
@@ -264,6 +295,7 @@ def profile_from_workload(workload: dict[str, Any]) -> Profile:
         workload["protocol"],
         workload["policy_contract"],
         workload["declarations"],
+        workload.get("policy_actions"),
     )
     if expected != workload:
         raise ValueError("resolved workload differs from authoritative inputs")
@@ -272,9 +304,7 @@ def profile_from_workload(workload: dict[str, Any]) -> Profile:
     # trained order explicitly, including tables with ten or more actions.
     table = raw["action_table"]
     names = raw["semantic_actions"]
-    raw["action_table"] = {
-        name: table[name] for name in [*names, *sorted(set(table) - set(names))]
-    }
+    raw["action_table"] = {name: table[name] for name in [*names, *sorted(set(table) - set(names))]}
     raw["id"] = workload["id"]
     parsed = _parse_document(raw, raw["id"].replace("/", "--") + ".toml", "").profile
     from dataclasses import replace
@@ -373,3 +403,46 @@ def probe_declarations(
         ):
             raise ValueError("cached declaration does not bind the selected exact artifact")
     return result
+
+
+def policy_decisions(contract: dict[str, Any], actions: list[list[str]]) -> list[int]:
+    """Collapse the locked raw capture without changing effective decision controls."""
+    import numpy as np
+
+    prefix, skip, count = (
+        contract["reset_noop_prefix"],
+        contract["frame_skip"],
+        contract["decisions"],
+    )
+    if skip <= 0 or count <= 0 or len(actions) != prefix + skip * count:
+        raise ValueError("policy capture length/cadence mismatch")
+    if canonical_json_hash(actions) != contract["action_sha256"] or any(actions[:prefix]):
+        raise ValueError("policy action digest/reset prefix mismatch")
+    seed = contract["selection"]["seed"]
+    maximum = contract["environment"]["provider_args"].get("noop_reset_max", 0)
+    expected_prefix = (
+        int(np.random.default_rng(seed).integers(1, maximum + 1, dtype=np.uint64)) if maximum else 0
+    )
+    if expected_prefix != prefix:
+        raise ValueError("saved reset seed does not reproduce captured noop prefix")
+    table = contract["environment"]["provider_args"]["use_restricted_actions"]
+    decisions = []
+    for start in range(prefix, len(actions), skip):
+        group = actions[start : start + skip]
+        if any(row != group[0] for row in group) or group[0] not in table:
+            raise ValueError("effective policy action/cadence differs from saved action table")
+        decisions.append(table.index(group[0]))
+    return decisions
+
+
+def policy_benchmark_settings(profile: Profile) -> dict[str, Any]:
+    if profile.action_stream_version != "captured-policy/v1":
+        return {}
+    if profile.resolved_workload is None:
+        raise ValueError("policy timing requires a locked workload")
+    policy = profile.resolved_workload["policy_contract"]
+    return {
+        "seed": policy["selection"]["seed"],
+        "noop_reset_max": policy["environment"]["provider_args"].get("noop_reset_max", 0),
+        "replicate_initial_seed": True,
+    }

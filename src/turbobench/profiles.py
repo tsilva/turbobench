@@ -57,6 +57,16 @@ def canonical_actions(
     count = profile.measurement_steps if steps is None else steps
     if count <= 0:
         raise ValueError("steps must be positive")
+    if profile.action_stream_version == "captured-policy/v1":
+        from turbobench.workloads import policy_decisions
+
+        workload = profile.resolved_workload
+        if workload is None or (seed is not None and seed != profile.run_seed):
+            raise ValueError("policy stream requires its locked workload and seed")
+        decisions = policy_decisions(workload["policy_contract"], workload["policy_actions"])
+        if count != len(decisions):
+            raise ValueError("policy benchmark must use the entire locked capture")
+        return np.repeat(np.asarray(decisions, dtype=np.int16)[:, None], shape, axis=1)
     generator = np.random.default_rng(profile.run_seed if seed is None else seed)
     actions = generator.integers(
         0,

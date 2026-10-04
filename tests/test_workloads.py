@@ -504,3 +504,181 @@ def test_json_round_trip_preserves_large_policy_action_order(policy_files, tmp_p
     restored = profile_from_workload(read_json(tmp_path / "workload.json"))
     assert list(restored.action_table.values()) == [tuple(row) for row in table] + [()]
     assert restored.semantic_actions == tuple(f"policy_{i}" for i in range(12))
+
+
+def test_policy_timing_uses_locked_decisions_and_rejects_substitution(policy_files):
+    from turbobench.profiles import canonical_actions
+    from turbobench.workloads import policy_benchmark_settings
+
+    contract = normalize_policy(policy_files)
+    contract["environment"]["provider_args"]["noop_reset_max"] = 1
+    actions = read_json(policy_files / "actions.json")["actions"]
+    workload = preliminary_workload(contract, policy_actions=actions)
+    profile = profile_from_workload(workload)
+    assert workload["schema"] == "turbobench.resolved-workload/v2"
+    assert profile.measurement_steps == 4
+    assert canonical_actions(profile, 2).tolist() == [[0, 0], [1, 1], [2, 2], [0, 0]]
+    assert policy_benchmark_settings(profile) == {
+        "seed": 123,
+        "noop_reset_max": 1,
+        "replicate_initial_seed": True,
+    }
+    with pytest.raises(ValueError, match="entire locked"):
+        canonical_actions(profile, 2, 3)
+    changed = deepcopy(workload)
+    changed["policy_actions"][3] = ["LEFT"]
+    with pytest.raises(ValueError, match="digest"):
+        profile_from_workload(changed)
+    changed = deepcopy(workload)
+    changed["configuration"]["run"]["seed"] += 1
+    with pytest.raises(ValueError, match="authoritative"):
+        profile_from_workload(changed)
+
+
+def test_policy_timing_rejects_seed_or_effective_cadence_mismatch(policy_files):
+    from turbobench.workloads import policy_decisions
+
+    contract = normalize_policy(policy_files)
+    actions = read_json(policy_files / "actions.json")["actions"]
+    with pytest.raises(ValueError, match="reset seed"):
+        preliminary_workload(contract, policy_actions=actions)
+    contract["environment"]["provider_args"]["noop_reset_max"] = 1
+    actions[2] = ["RIGHT"]
+    contract["action_sha256"] = canonical_json_hash(actions)
+    with pytest.raises(ValueError, match="cadence"):
+        policy_decisions(contract, actions)
+
+
+def test_future_workflows_scale_but_frozen_v1_workloads_keep_their_shapes(policy_files):
+    from turbobench.workloads import _resource
+
+    contract = normalize_policy(policy_files)
+    for policy_actions in (None, read_json(policy_files / "actions.json")["actions"]):
+        if policy_actions is not None:
+            contract["environment"]["provider_args"]["noop_reset_max"] = 1
+        future = preliminary_workload(contract, policy_actions=policy_actions)
+        assert future["protocol"]["id"].endswith("/v2")
+        assert profile_from_workload(future).measurement_shapes == tuple(2**i for i in range(11))
+        legacy_id = "paired-policy/v1" if policy_actions is not None else "paired-environment/v1"
+        legacy = resolve_workload(
+            future["definition"],
+            _resource("comparison_protocols", legacy_id),
+            contract,
+            {},
+            policy_actions,
+        )
+        assert profile_from_workload(legacy).measurement_shapes == (1, 16, 32)
+        assert "scaling" not in legacy["protocol"]
+        changed = deepcopy(future)
+        changed["protocol"]["scaling"]["minimum_gain"] = 0.5
+        with pytest.raises(ValueError, match="trusted version"):
+            profile_from_workload(changed)
+
+
+def test_adaptive_engine_stops_before_probing_unused_counts_and_rejects_forged_stop(
+    policy_files, tmp_path, monkeypatch, fake_assets
+):
+    from turbobench import engine, workflow
+    from turbobench.bundle import verify_bundle
+    from turbobench.engine import ComparisonOptions, run_comparison_resolved
+    from turbobench.reporting import render_report
+    from turbobench.resolution import fake_resolved
+    from turbobench.runtime import harness_source_hash, prepare_runtime
+    from turbobench.workflow import verify_sampling
+    from turbobench.workloads import probe_declarations
+
+    contract = normalize_policy(policy_files)
+    contract["environment"]["provider_args"]["noop_reset_max"] = 1
+    actions = read_json(policy_files / "actions.json")["actions"]
+    preliminary = preliminary_workload(contract, policy_actions=actions)
+    providers = {
+        "left": prepare_runtime(fake_resolved("stable-retro", speed=1)),
+        "right": prepare_runtime(fake_resolved("env-breakoutatari2600-turbo-native", speed=2)),
+    }
+    declarations = probe_declarations(profile_from_workload(preliminary), providers, lambda _: None)
+    workload = resolve_workload(
+        preliminary["definition"], preliminary["protocol"], contract, declarations, actions
+    )
+    profile = profile_from_workload(workload)
+    request = {
+        "schema": "turbobench.comparison-request/v3",
+        "request_id": "",
+        "profile": profile.id,
+        "resolved_workload": workload,
+        "smoke": False,
+        "left": f"stable-retro@{providers['left'].version}",
+        "right": f"env-breakoutatari2600-turbo-native@{providers['right'].version}",
+        "python_minor": "3.14",
+        "policy_id": "policy-fixture",
+        "actions": actions,
+        "policy_contract": contract,
+        "render_machine": {"machine_sha256": "render-host", "hardware": {}},
+        "harness_sha256": harness_source_hash(),
+    }
+    request["request_id"] = canonical_json_hash(request)
+    monkeypatch.setattr(
+        workflow, "machine_identity", lambda: {"machine_sha256": "benchmark-host", "hardware": {}}
+    )
+    invocation = engine._benchmark_invocation
+    measured = []
+    interrupted = False
+
+    def capped_invocation(*args, **kwargs):
+        nonlocal interrupted
+        provider, count = args[1], args[3]
+        if count == 4 and not interrupted:
+            interrupted = True
+            raise RuntimeError("fixture interrupted before shape 4 timing")
+        response = invocation(*args, **kwargs)
+        # Upstream saturates at 2, candidate at 8; continue until both are flat twice.
+        limit = 2 if provider.provider == "stable-retro" else 8
+        response["sps"] = [
+            float(min(count, limit) * float(provider.source_identity.rsplit(":", 1)[1]) * 100)
+        ] * 3
+        measured.append(count)
+        return response
+
+    monkeypatch.setattr(engine, "_benchmark_invocation", capped_invocation)
+    monkeypatch.setattr(
+        engine, "wait_for_load", lambda **kwargs: {"passed": True, "forced": False, "threshold": 1}
+    )
+    options = ComparisonOptions(measurement_only=True, workflow_request=request)
+    with pytest.raises(RuntimeError, match="fixture interrupted"):
+        run_comparison_resolved(
+            profile,
+            providers["left"],
+            providers["right"],
+            tmp_path / "adaptive",
+            options,
+            private_assets={},
+            portable_assets=fake_assets,
+        )
+    completed_before_resume = list(measured)
+    assert set(completed_before_resume) == {1, 2}
+    root, result = run_comparison_resolved(
+        profile,
+        providers["left"],
+        providers["right"],
+        tmp_path / "adaptive",
+        options,
+        private_assets={},
+        portable_assets=fake_assets,
+    )
+    assert set(result["comparison"]["shapes"]) == {"1", "2", "4", "8", "16", "32"}
+    assert all(count >= 4 for count in measured[len(completed_before_resume) :])
+    assert require_proof(root)["schema"] == "turbobench.benchmark-proof/v3"
+    assert max(measured) == 32
+    assert set(result["contract_attestations"]["left"]) == set(result["comparison"]["shapes"])
+    assert result["scaling"]["complete"]
+    assert "both_providers_saturated" in render_report(result)
+    assert verify_bundle(root)["passed"]
+    verify_sampling(root, request, result)
+    # Re-signing a changed stopping record still fails semantic verification.
+    result["scaling"]["stop_reason"] = "safety_cap"
+    write_json(root / "result.json", result)
+    write_json(root / "verification" / "scaling.json", result["scaling"])
+    proof = read_json(root / "manifest.json")
+    finalize_proof(root, proof["schema"], proof["bindings"])
+    assert not verify_bundle(root)["passed"]
+    with pytest.raises(ValueError, match="inconsistent"):
+        verify_sampling(root, request, result)

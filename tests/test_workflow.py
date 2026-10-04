@@ -209,12 +209,72 @@ def test_scaling_chart_inverts_shape_local_ci_and_keeps_slow_points() -> None:
             "shapes": {"1": {"statistics": shape}, "32": {"statistics": shape}},
         }
     }
-    chart = scaling_chart(result, diagnostic=False)
+    chart = scaling_chart(result, diagnostic=False, style="comparison-style/v1")
     assert chart.count("0.50x") == 2
     assert "n_envs=32" in chart
     assert "stroke-dasharray" in chart
     assert 'stroke-width="3"' in chart
     assert "#0d1117" in chart
+
+
+def test_scaling_chart_pairs_measured_provider_throughput_at_each_shape() -> None:
+    from xml.etree import ElementTree
+
+    from turbobench.showcase import scaling_chart
+
+    slow = paired_statistics([{"left_sps": [200] * 3, "right_sps": [100] * 3}] * 7)
+    fast = paired_statistics([{"left_sps": [100] * 3, "right_sps": [400] * 3}] * 7)
+    result = {
+        "comparison": {
+            "left": {"provider": "upstream", "version": "1"},
+            "right": {"provider": "candidate", "version": "2"},
+            "shapes": {"32": {"statistics": fast}, "1": {"statistics": slow}},
+        }
+    }
+    chart = scaling_chart(result, diagnostic=False)
+    svg = ElementTree.fromstring(chart)
+    groups = [element for element in svg.iter() if "data-n-envs" in element.attrib]
+    assert [group.attrib["data-n-envs"] for group in groups] == ["1", "32"]
+    scales, baselines = [], []
+    for group, statistics in zip(groups, (slow, fast), strict=True):
+        bars = [element for element in group if "data-provider" in element.attrib]
+        assert [bar.attrib["data-provider"] for bar in bars] == ["left", "right"]
+        assert float(bars[0].attrib["x"]) + float(bars[0].attrib["width"]) < float(
+            bars[1].attrib["x"]
+        )
+        for bar, side in zip(bars, ("left", "right"), strict=True):
+            sps = statistics[f"median_{side}_sps"]
+            assert float(bar.attrib["data-sps"]) == sps
+            scales.append(float(bar.attrib["height"]) / sps)
+            baselines.append(float(bar.attrib["y"]) + float(bar.attrib["height"]))
+    assert scales == pytest.approx([scales[0]] * 4)
+    assert baselines == pytest.approx([baselines[0]] * 4)
+    assert "0.50x speedup" in chart and "4.00x speedup" in chart
+    assert "95% paired CI: 0.50x - 0.50x" in chart
+    assert "DIAGNOSTIC" not in chart
+    with pytest.raises(ValueError, match="unsupported comparison style"):
+        scaling_chart(result, diagnostic=False, style="comparison-style/v999")
+
+
+def test_smoke_bar_chart_keeps_diagnostic_marking_without_inventing_uncertainty() -> None:
+    from turbobench.showcase import scaling_chart
+
+    stats = paired_statistics(
+        [{"left_sps": [200], "right_sps": [60000]}], require_official_design=False, smoke=True
+    )
+    result = {
+        "comparison": {
+            "left": {"provider": "upstream<&", "version": "1"},
+            "right": {"provider": "candidate", "version": "2"},
+            "shapes": {"1": {"statistics": stats}},
+        }
+    }
+    chart = scaling_chart(result, diagnostic=True)
+    assert "DIAGNOSTIC - no validated performance claim" in chart
+    assert "One sample; no confidence interval" in chart
+    assert "95% paired CI" not in chart
+    assert "300.00x speedup" in chart
+    assert "upstream&lt;&amp;" in chart
 
 
 def test_video_keeps_initial_frame_at_large_speedup_and_holds_final_frame(tmp_path: Path) -> None:
@@ -413,3 +473,64 @@ def test_policy_package_rejects_checkpoint_and_training_setting_substitution(
             "https://tracking.example/test",
             "fixture",
         )
+
+
+def test_installed_workflow_uses_bundled_lock_and_installs_published_cli(tmp_path):
+    from turbobench import __version__
+    from turbobench.workflow import _harness_layout, _measurement_command
+
+    package = tmp_path / "site-packages" / "turbobench"
+    bundled = package / "workflow_runtime"
+    bundled.mkdir(parents=True)
+    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
+        (bundled / name).write_text("fixture")
+    assert _harness_layout(package) == (package, bundled, True)
+    command = _measurement_command("/remote/job", "3.14", True)
+    assert "uv sync --frozen --no-dev --no-install-project --python 3.14" in command
+    assert f"--no-deps turbobench-cli=={__version__}" in command
+    assert ".venv/bin/turbobench measure-request" in command
+    assert "uv run" not in command
+    (bundled / "uv.lock").unlink()
+    with pytest.raises(ValueError, match=r"uv\.lock"):
+        _harness_layout(package)
+
+
+def test_bundled_project_metadata_does_not_change_package_harness_hash(tmp_path, monkeypatch):
+    from turbobench import runtime
+
+    package = tmp_path / "turbobench"
+    package.mkdir()
+    (package / "runtime.py").write_text("fixture-source")
+    monkeypatch.setattr(runtime, "__file__", str(package / "runtime.py"))
+    before = runtime.harness_source_hash()
+    bundled = package / "workflow_runtime"
+    bundled.mkdir()
+    (bundled / "pyproject.toml").write_text("fixture-metadata")
+    assert runtime.harness_source_hash() == before
+    (package / "runtime.py").write_text("changed-source")
+    assert runtime.harness_source_hash() != before
+
+
+def test_installed_runner_does_not_import_controller_dependencies(tmp_path, monkeypatch):
+    import shutil
+
+    from turbobench import runner_client
+    from turbobench.engine import _contract_attestation
+
+    package = tmp_path / "site-packages" / "turbobench"
+    shutil.copytree(
+        Path(runner_client.__file__).parent, package, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    (package.parent / "numpy.py").write_text("raise RuntimeError('controller dependency leaked')")
+    monkeypatch.setattr(runner_client, "__file__", str(package / "runner_client.py"))
+    provider = prepare_runtime(fake_resolved("fake-left", speed=1))
+    attestation = _contract_attestation(
+        tmp_path / "probe",
+        provider,
+        get_profile("supermario/world1-v1"),
+        1,
+        {},
+        {"required": False, "available": True, "assets": []},
+        side="left",
+    )
+    assert attestation["passed"]

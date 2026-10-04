@@ -357,19 +357,21 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 def _trace_request(profile_id: str, shape: int = 3) -> dict:
     profile = get_profile(profile_id)
     actions = canonical_actions(profile, shape, profile.measurement_steps)
-    return _attested_request({
-        "operation": "trace",
-        "provider": "fake",
-        "adapter": "fake",
-        "distribution": "turbobench",
-        "profile": profile.id,
-        "shape": shape,
-        "assets": {},
-        "fake_speed": 1.0,
-        "seed": 123,
-        "actions": actions.tolist(),
-        "action_stream_sha256": action_stream_hash(profile, actions),
-    })
+    return _attested_request(
+        {
+            "operation": "trace",
+            "provider": "fake",
+            "adapter": "fake",
+            "distribution": "turbobench",
+            "profile": profile.id,
+            "shape": shape,
+            "assets": {},
+            "fake_speed": 1.0,
+            "seed": 123,
+            "actions": actions.tolist(),
+            "action_stream_sha256": action_stream_hash(profile, actions),
+        }
+    )
 
 
 def _attested_request(request: dict) -> dict:
@@ -444,9 +446,7 @@ def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> N
         "promo_actions": actions,
         "promo_action_sha256": promo_action_hash(profile, actions),
     }
-    left = execute(
-        _attested_request({**base, "output_frames": str(tmp_path / "left.rgb")})
-    )
+    left = execute(_attested_request({**base, "output_frames": str(tmp_path / "left.rgb")}))
     right = execute(
         _attested_request(
             {**base, "provider": "fake-2", "output_frames": str(tmp_path / "right.rgb")}
@@ -496,3 +496,60 @@ def test_workload_environment_closes_when_execution_fails(
     with pytest.raises(RuntimeError, match="injected step failure"):
         execute(request)
     assert len(closed) == 1
+
+
+def test_policy_repetitions_reset_identically_outside_timing(monkeypatch):
+    import turbobench.runner as runner
+
+    events = []
+    timed = False
+
+    class CaptureAdapter:
+        num_envs = 2
+        closed = False
+
+        def __init__(self):
+            self.contract_report = {}
+
+        def initial_reset(self, seed):
+            assert not timed
+            events.append(("reset", seed))
+
+        def benchmark_action(self, action):
+            assert not timed
+            return action
+
+        def step(self, action):
+            events.append(("step", timed, action.tolist()))
+            return None, None, np.zeros(2, dtype=bool), np.zeros(2, dtype=bool), {}
+
+        def close(self):
+            self.closed = True
+
+    adapter = CaptureAdapter()
+    monkeypatch.setattr(runner, "_create_workload_adapter", lambda *args: adapter)
+    monkeypatch.setattr(runner, "_workload_lifecycle", lambda *args: {})
+
+    def clock():
+        nonlocal timed
+        timed = not timed
+        return 0 if timed else 1_000_000
+
+    monkeypatch.setattr(runner.time, "perf_counter_ns", clock)
+    result = runner.run_benchmark(
+        {
+            "actions": [[1, 1], [2, 2]],
+            "seed": 1000000,
+            "replicate_initial_seed": True,
+            "warmup_steps": 1,
+            "provider": "fixture",
+            "action_stream_sha256": "locked",
+        },
+        get_profile("breakout/start-v1"),
+    )
+    assert [event for event in events if event[0] == "reset"] == [("reset", 1000000)] * 4
+    assert [event[1] for event in events if event[0] == "step"] == [False] + [True] * 6
+    assert result["steps"] == 2
+    assert "policy_inference" in result["timed_excludes"]
+    assert "trajectory_recording" in result["timed_excludes"]
+    assert adapter.closed

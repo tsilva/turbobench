@@ -44,6 +44,19 @@ for another run. Do not publish this fixture as a new benchmark result.
   Diagnostic renders must follow TurboBench's diagnostic marking rules; the
   historical user-approved exception is not a general exception for future runs.
 
+## Scaling chart
+
+Use two side-by-side bars for each measured `n_envs`, with upstream on the left
+and candidate on the right. Bar heights show each provider's shape-local median
+SPS on one shared linear axis starting at zero. Allocate enough canvas width for
+legible labels and confidence intervals as adaptive sweeps add counts. Label the exact provider versions
+and throughput values. Keep the paired candidate/upstream speedup and its 95%
+confidence interval below each group when available; smoke charts disclose the
+single sample and absent confidence interval. Keep diagnostic charts visibly
+marked, including when the candidate is slower. Never aggregate counts or add
+unmeasured environment counts. This chart presentation is `comparison-style/v2`;
+archived `comparison-style/v1` point charts retain their original verification.
+
 ## Policy and replay
 
 The policy's saved resolved recipe and training contract are authoritative for

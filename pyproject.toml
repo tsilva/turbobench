@@ -51,6 +51,12 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/turbobench"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"pyproject.toml" = "turbobench/workflow_runtime/pyproject.toml"
+"uv.lock" = "turbobench/workflow_runtime/uv.lock"
+"README.md" = "turbobench/workflow_runtime/README.md"
+"LICENSE" = "turbobench/workflow_runtime/LICENSE"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
