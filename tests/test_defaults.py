@@ -175,6 +175,10 @@ def test_short_command_passes_resolved_defaults_to_workflow(
         return output
 
     monkeypatch.setattr("turbobench.workflow.run_workflow", run)
+    monkeypatch.setattr(
+        "turbobench.publication.export_publication",
+        lambda path: path.with_name(path.name + "-publication"),
+    )
     assert main(["compare", "--showcase"]) == 0
     assert main(["compare", "--showcase"]) == 0
     assert seen[0] != seen[1]
@@ -230,6 +234,10 @@ def test_policy_benchmark_uses_pinned_selection_without_media(local_policy: Path
         return output
 
     monkeypatch.setattr("turbobench.workflow.run_workflow", run)
+    monkeypatch.setattr(
+        "turbobench.publication.export_publication",
+        lambda path: path.with_name(path.name + "-publication"),
+    )
     assert main(["compare", "--policy", str(local_policy)]) == 0
     assert seen == [local_policy]
     monkeypatch.setattr(
@@ -255,5 +263,9 @@ def test_policy_timing_can_generate_a_showcase(local_policy, monkeypatch):
         return output
 
     monkeypatch.setattr("turbobench.workflow.run_workflow", run)
+    monkeypatch.setattr(
+        "turbobench.publication.export_publication",
+        lambda path: path.with_name(path.name + "-publication"),
+    )
     assert main(["compare", "--policy-benchmark", "--showcase"]) == 0
     assert seen == [local_policy]

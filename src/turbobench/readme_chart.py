@@ -13,6 +13,8 @@ from turbobench.proofs import require_proof
 from turbobench.showcase import BACKGROUND, NAMES, YELLOW, scaling_chart
 from turbobench.util import read_json, sha256_file, write_json
 
+PUBLICATION_NAMES = NAMES | {"env-supermariobrosnes-turbo-emu": "SuperMarioBrosNes-turbo"}
+
 
 def peak_rows(result: dict[str, Any]) -> tuple[list[tuple[str, Any]], list[int]]:
     """Keep the measured prefix through the first maximum candidate median SPS."""
@@ -48,17 +50,14 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     ]
     for side, y in (("left", 32), ("right", 55)):
         provider = result["comparison"][side]
-        name = f"{NAMES.get(provider['provider'], provider['provider'])} {provider['version']}"
+        name = f"{PUBLICATION_NAMES.get(provider['provider'], provider['provider'])} {provider['version']}"
         svg.append(
             f'<rect x="482" y="{y - 12}" width="12" height="12" fill="{colors[side]}"/>'
             f'<text x="502" y="{y}" font-size="14" fill="{colors[side]}">{escape(name)}</text>'
         )
     processor = result.get("system", {}).get("host", {}).get("cpu")
     if processor:
-        svg.append(
-            '<text x="24" y="60" font-size="12" fill="#acbde1">'
-            f"{escape(processor)}</text>"
-        )
+        svg.append(f'<text x="24" y="60" font-size="12" fill="#acbde1">{escape(processor)}</text>')
     if diagnostic:
         svg.append(
             '<text x="24" y="88" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
@@ -138,6 +137,19 @@ def export_readme_chart(benchmark: Path, output: Path, *, full: bool = False) ->
     if manifest["schema"] not in {"turbobench.benchmark-proof/v2", "turbobench.benchmark-proof/v3"}:
         raise ValueError("expected a benchmark proof")
     result = read_json(benchmark / "result.json")
+    return write_publication_chart(benchmark, output, manifest, result, full=full)
+
+
+def write_publication_chart(
+    benchmark: Path,
+    output: Path,
+    manifest: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    full: bool,
+    candidate_side: str = "right",
+) -> dict[str, Any]:
+    """Write a chart from evidence already verified by the calling exporter."""
     diagnostic = (
         result["claim"]["status"] != "official" or result["comparison"]["outcome"] == "inconclusive"
     )
@@ -149,7 +161,8 @@ def export_readme_chart(benchmark: Path, output: Path, *, full: bool = False) ->
     output.write_text(renderer(result, diagnostic=diagnostic))
     provenance = {
         "format": "turbobench.publication-chart/v1",
-        "benchmark_id": manifest["proof_id"],
+        "benchmark_id": manifest.get("proof_id", manifest.get("bundle_id")),
+        "source_candidate_side": candidate_side,
         "result_sha256": sha256_file(benchmark / "result.json"),
         "renderer_sha256": sha256_file(Path(__file__)),
         "selection": "all-measured-counts"

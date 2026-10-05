@@ -44,7 +44,7 @@ for another run. Do not publish this fixture as a new benchmark result.
   never invent Atari-specific preprocessing for another game.
 - Keep the approved frame free of extra policy/training subtitles, timing
   explanations, and footnotes. Put method, hardware, uncertainty, policy link,
-  exclusions, and limitations in the adjacent README caption and method report.
+  exclusions, and limitations in the linked `benchmarks.md` document.
   Unmarked showcase assets still require TurboBench's official validity gates.
   Diagnostic renders must follow TurboBench's diagnostic marking rules; the
   historical user-approved exception is not a general exception for future runs.
@@ -88,20 +88,33 @@ additional compact rows for larger sweeps rather than one tall row per count.
 Round displayed SPS to whole steps per second, while keeping bar lengths based on
 the original medians. Omit paired CI labels and bottom explanatory labels from
 publication charts; retain exact values, intervals, sampling and cutoff disclosures
-in the adjacent caption and method report. The complete publication view follows
+in `benchmarks.md`. The complete publication view follows
 the same label rules and can be exported with `--full`. Archived proof charts
 keep their original bytes and verification.
 
 Show the measured prefix through the first maximum candidate median SPS. This
 cutoff concerns candidate throughput, not the speedup ratio; retain earlier counts
 even if they dip before a later recovery. Disclose the peak and omitted later counts
-next to the chart. Keep every measured count in the original proof, complete chart,
+in `benchmarks.md`. Keep every measured count in the original proof, complete chart,
 and method report. This view is a derived publication export, not a replacement proof.
-Generate it with `python -m turbobench.readme_chart BENCHMARK_PROOF OUTPUT.svg`;
-the exporter verifies the input and writes an adjacent JSON provenance file binding
-the proof ID, result hash, renderer hash, count selection and output digest. Pin the
-renderer revision in the environment repository and check the actual GitHub rendering
-at README width; readers must not need to open another page to read the values.
+`compare` generates this view automatically in its sibling publication folder.
+Use `turbobench export-publication PROOF OUTPUT --proof-url URL` to refresh the
+exports without measuring again. Each chart has an adjacent JSON provenance
+record binding the proof ID, result hash, renderer hash, provider orientation,
+count selection and output digest. Pin the verifier in `benchmarks.md` and check
+actual GitHub rendering at README width; readers must not need to zoom.
+
+### Benchmark document
+
+The README shows the verified animation, compact chart, and one link to
+`benchmarks.md`. Keep that document concise: latest provider/tool versions,
+benchmark CPU, complete SPS/ratio/CI table, peak and omitted counts, timing and
+sampling protocol, actual controls, configuration, locked policy link and
+limitations when applicable, proof download, and exact verifier instructions.
+Derive every value from the verified run. Do not inherit Breakout-specific
+settings, scores or limitations for another environment. Retain older proof
+links without older result prose. `publication.json` binds the generated
+files and source identities; keep proof archives and models outside Git.
 
 ## Policy and replay
 

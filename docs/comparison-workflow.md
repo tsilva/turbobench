@@ -291,13 +291,14 @@ we never claim they are the same binary. No ROM, snapshot payload, or raw
 reference-provider frames are transferred with the measurement proof. Raw
 rendering frames are temporary on the asset host.
 
-Timing measures matched environment work with seeded controls, including
+Timing measures matched environment work with the request’s locked controls, including
 preprocessing, IPC, infos, terminal detection, and selective resets. It excludes
 inference, training task/context/reward wrappers, construction, initial reset,
 capture, chart generation, and encoding. The benchmark uses `obs_copy=copy` and
 `num_threads=n_envs`, which may differ from training buffer/thread settings; the
-saved training recipe and those differences are disclosed. Only the comparison
-video follows the captured trained policy actions. Video playback illustrates
+saved training recipe and those differences are disclosed. Policy-benchmark
+requests use captured policy controls for timing and playback; legacy showcase
+requests time seeded controls and use policy actions only for playback. Video playback illustrates
 shape-1 throughput with common 4x compression and the measured ratio; it is not
 a wall-clock recording. Slower candidates retain their real sub-1x ratio.
 
@@ -305,26 +306,55 @@ A full unmarked video requires official, conclusive shape-1 measurements and
 exact replay. Failed gates preserve evidence and refuse the video; a diagnostic
 chart/report can remain in partial output. Other shapes, including slow or
 inconclusive points, remain on the chart. Do not extrapolate unmeasured counts.
-Copy only verified exports into the environment README, preserving its adjacent
-method/limitations caption and an archive reference to the proof. Models and
-result packages stay under ignored `turbobench-results`, outside Git and wheels.
+Every successful `compare` also creates a sibling `<proof-name>-publication/`
+directory. Copy its exports into the environment repository; keep models and
+proof archives under ignored `turbobench-results`, outside Git and wheels.
+The immutable proof and its original chart/report remain unchanged.
 
-For the GitHub README, export the readable peak-throughput view separately:
-
-```bash
-uv run --frozen python -m turbobench.readme_chart \
-  comparison/benchmark /path/to/environment-repo/benchmark-readme.svg
-# Optional complete publication view with the same simplified labels.
-uv run --frozen python -m turbobench.readme_chart \
-  comparison/benchmark /path/to/environment-repo/benchmark.svg --full
+```text
+comparison-publication/
+  demo.mp4, demo.webp          # verified showcase only, approved Same Actions frame
+  benchmark-readme.svg/json   # compact vertical bars through candidate peak
+  benchmark.svg/json          # complete counts, simplified publication labels
+  benchmarks.md               # latest results, method, limits, proof, pinned verifier
+  README-snippet.md           # assets and one link to benchmarks.md
+  publication.json            # proof identity, orientation, exporter and asset hashes
 ```
 
-This verifies the immutable benchmark and writes the SVG plus an adjacent JSON
-publication record. The README view keeps the measured prefix through the first
-candidate median-SPS maximum and explicitly discloses later omitted counts.
-The original proof and its complete chart remain unchanged. Publish both export
-files, pin the renderer source revision, and retain the complete results in the
-method report. See the [README presentation constraints](comparison-media.md#readme-view).
+The README contains only the animation, readable chart, and a link to
+`benchmarks.md`. That document describes the latest benchmark; previous runs
+retain proof references rather than old results or explanatory prose. All
+hardware, provider versions, settings, controls, uncertainty and limits come
+from verified evidence. Diagnostic runs remain marked. The profile authority
+appears on the left even when supplied as `--right`; otherwise the caller's
+left provider is the reference and right provider is the candidate. The
+publication record binds that orientation without modifying the proof.
+
+Re-export an existing verified proof with its public archive/release link:
+
+```bash
+turbobench export-publication comparison comparison-publication \
+  --proof-url https://github.com/OWNER/ENV/releases/tag/PROOF_TAG
+# For a subsequent benchmark, preserve only earlier proof links:
+turbobench export-publication next-comparison next-publication \
+  --proof-url https://github.com/OWNER/ENV/releases/tag/NEXT_PROOF_TAG \
+  --previous-publication comparison-publication
+```
+
+Output directories must be fresh and outside the proof. A failed export leaves
+the completed proof available for this command; it never requires rerunning
+measurements. The default local proof link should be replaced with a public
+link before copying exports to GitHub. The exporter pins its exact clean source
+commit or installed release in verification instructions. A dirty source export
+explicitly requires a clean source or published verifier pin before publication.
+Nothing is uploaded, pushed, or published automatically.
+
+The README chart retains the measured prefix through the first candidate
+median-SPS maximum, including any earlier dips and recoveries. Omitted counts
+are disclosed in `benchmarks.md`; the complete chart and table retain them.
+Standalone chart export remains available with
+`python -m turbobench.readme_chart BENCHMARK_PROOF OUTPUT.svg [--full]`.
+See the [README presentation constraints](comparison-media.md#readme-view).
 
 Use the project skill `.codex/skills/comparison-showcase/SKILL.md` and the
 [approved presentation reference](comparison-media.md) when refreshing assets.

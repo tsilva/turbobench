@@ -107,6 +107,16 @@ chart, raw evidence, verification records, and optional media. `manifest.json`
 binds portable files by size and SHA-256. Use `turbobench verify PATH` to check
 integrity and consistency, and `turbobench report PATH` to read the report.
 
+`compare` also prints a `publication` directory in its final JSON. This sibling
+folder contains the compact README chart, complete chart, concise latest
+`benchmarks.md`, README snippet, export hashes, and verified showcase media when
+available. Copy these exports into the environment repository, link the README
+to `benchmarks.md`, and retain previous proof links there. Re-export with
+`turbobench export-publication PROOF NEW_DIRECTORY --proof-url PUBLIC_PROOF_URL`;
+add `--previous-publication OLD_DIRECTORY` to carry earlier proof references.
+The proof itself remains unchanged. See the
+[publication workflow](comparison-workflow.md#evidence-and-exports).
+
 Optional legacy `promo` replays the locked providers and one canonical semantic
 action trajectory. Displayed ratios come from the bound benchmark; diagnostic
 media is watermarked. Two-host showcases additionally bind policy provenance,

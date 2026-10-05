@@ -105,6 +105,15 @@ to a fresh directory under `turbobench-results/`. Follow the
 [workflow guide](https://github.com/tsilva/turbobench/blob/main/docs/comparison-workflow.md)
 for policy import, assets on both hosts, extra rendering tools, and proof checks.
 
+Each `compare` also creates a sibling `<proof-name>-publication/` folder with
+compact vertical charts, concise `benchmarks.md`, a README snippet, and verified
+showcase media when available. The README snippet links to the benchmark document;
+previous results are kept only as proof references. Refresh exports without a new run:
+
+```bash
+turbobench export-publication PROOF NEW_EXPORT_DIRECTORY --proof-url PUBLIC_PROOF_URL
+```
+
 ## Notes
 
 - Official comparisons require compatible providers, matched correctness, paired

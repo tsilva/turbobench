@@ -109,6 +109,18 @@ def build_parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify", help="verify bundle integrity and consistency")
     verify.add_argument("bundle", type=Path)
 
+    publication = commands.add_parser(
+        "export-publication", help="verify and export README assets and concise benchmark results"
+    )
+    publication.add_argument("proof", type=Path)
+    publication.add_argument("output", type=Path, nargs="?")
+    publication.add_argument("--proof-url", help="public proof archive or release link")
+    publication.add_argument(
+        "--previous-publication",
+        type=Path,
+        help="retain earlier proof references without old benchmark prose",
+    )
+
     verify_parity = commands.add_parser("verify-parity", help="verify a portable parity receipt")
     verify_parity.add_argument("receipt", type=Path)
     verify_parity.add_argument(
@@ -205,6 +217,17 @@ def main(argv: list[str] | None = None) -> int:
             return _compare(args, arguments)
         if args.command == "parity":
             return _parity(args, arguments)
+        if args.command == "export-publication":
+            from turbobench.publication import export_publication
+
+            output = export_publication(
+                args.proof,
+                args.output,
+                proof_url=args.proof_url,
+                previous=args.previous_publication,
+            )
+            print(json.dumps({"publication": str(output)}, indent=2))
+            return 0
         if args.command == "verify":
             result = verify_bundle(args.bundle)
             print(json.dumps(result, indent=2, sort_keys=True))
@@ -287,6 +310,7 @@ def _profiles_list() -> None:
 
 def _compare(args: argparse.Namespace, command: list[str]) -> int:
     from turbobench.defaults import apply_comparison_defaults
+    from turbobench.publication import export_publication
 
     if args.policy is not None and not args.showcase:
         args.policy_benchmark = True
@@ -302,10 +326,12 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
             f"Policy: {args.policy}; benchmark: {args.benchmark_host}; render: local; output: {output}"
         )
         bundle = run_workflow(args, output, _print_progress)
+        publication = export_publication(bundle)
         print(
             json.dumps(
                 {
                     "bundle": str(bundle.resolve()),
+                    "publication": str(publication),
                     "pipeline_passed": True,
                     "mode": "smoke" if args.smoke else "full",
                 },
@@ -333,10 +359,12 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
         progress=_print_progress,
     )
     bundle, result = run_comparison(args.profile, left, right, output, options)
+    publication = export_publication(bundle)
     print(
         json.dumps(
             {
                 "bundle": str(bundle),
+                "publication": str(publication),
                 "validity": result["validity"]["passed"],
                 "claim": result["claim"]["status"],
                 "outcome": result["comparison"]["outcome"],
