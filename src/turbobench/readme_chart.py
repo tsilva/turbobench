@@ -46,12 +46,12 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
         '<text x="24" y="38" font-size="30" font-weight="700">Scaling to peak throughput</text>',
         '<text x="24" y="68" font-size="18" fill="#acbde1">Environment steps / second · higher is faster</text>',
     ]
-    for side, x in (("left", 24), ("right", 300)):
+    for side, y in (("left", 32), ("right", 55)):
         provider = result["comparison"][side]
         name = f"{NAMES.get(provider['provider'], provider['provider'])} {provider['version']}"
         svg.append(
-            f'<rect x="{x}" y="85" width="16" height="16" fill="{colors[side]}"/>'
-            f'<text x="{x + 24}" y="100" font-size="18" fill="{colors[side]}">{escape(name)}</text>'
+            f'<rect x="482" y="{y - 12}" width="12" height="12" fill="{colors[side]}"/>'
+            f'<text x="502" y="{y}" font-size="14" fill="{colors[side]}">{escape(name)}</text>'
         )
     if diagnostic:
         svg.append(
@@ -85,11 +85,11 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
                     f'<rect data-provider="{side}" data-sps="{sps}" x="{x:.3f}" y="{top:.6f}" '
                     f'width="26" height="{bar_height:.6f}" fill="{colors[side]}"/>'
                     f'<text x="{x + 13:.3f}" y="{top - 8:.3f}" text-anchor="middle" '
-                    f'font-size="17" fill="{colors[side]}">{sps:,.0f}</text>'
+                    f'font-size="13" fill="{colors[side]}">{sps:,.0f}</text>'
                 )
             svg.append(
-                f'<text x="{center:.3f}" y="{baseline + 29}" text-anchor="middle" font-size="18">{shape}</text>'
-                f'<text x="{center:.3f}" y="{baseline + 58}" text-anchor="middle" font-size="17" '
+                f'<text x="{center:.3f}" y="{baseline + 29}" text-anchor="middle" font-size="14">{shape}</text>'
+                f'<text x="{center:.3f}" y="{baseline + 58}" text-anchor="middle" font-size="13" '
                 f'font-weight="700" fill="{YELLOW}">{ratio:.2f}\u00d7</text></g>'
             )
     svg.append("</g></svg>")

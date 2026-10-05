@@ -66,7 +66,8 @@ frames retain their original title and label placement during verification.
 The GitHub README uses a separate, readable publication view rather than scaling
 the complete wide chart down to fit. Use an 800-unit canvas with side-by-side
 vertical bars, a compact height (420 units for up to seven counts), and readable
-SPS and speedup labels.
+SPS and speedup labels. Put the provider legend at the top right, with 14-unit
+legend text; use 13-unit SPS and speedup values and 14-unit environment counts.
 Both providers share one linear scale from zero; do not enlarge tiny upstream bars
 or use undisclosed independent scales. Keep up to seven groups per row; use
 additional compact rows for larger sweeps rather than one tall row per count.
