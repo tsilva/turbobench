@@ -314,6 +314,9 @@ For the GitHub README, export the readable peak-throughput view separately:
 ```bash
 uv run --frozen python -m turbobench.readme_chart \
   comparison/benchmark /path/to/environment-repo/benchmark-readme.svg
+# Optional complete publication view with the same simplified labels.
+uv run --frozen python -m turbobench.readme_chart \
+  comparison/benchmark /path/to/environment-repo/benchmark.svg --full
 ```
 
 This verifies the immutable benchmark and writes the SVG plus an adjacent JSON

@@ -65,9 +65,15 @@ frames retain their original title and label placement during verification.
 
 The GitHub README uses a separate, readable publication view rather than scaling
 the complete wide chart down to fit. Use an 800-unit canvas with paired horizontal
-bars, generous vertical space, large numeric SPS labels and paired 95% intervals.
+bars, generous vertical space and large numeric SPS and speedup labels.
 Both providers share one linear scale from zero; do not enlarge tiny upstream bars
 or use undisclosed independent scales. Grow height rather than width as counts grow.
+Round displayed SPS to whole steps per second, while keeping bar lengths based on
+the original medians. Omit paired CI labels and bottom explanatory labels from
+publication charts; retain exact values, intervals, sampling and cutoff disclosures
+in the adjacent caption and method report. The complete publication view follows
+the same label rules and can be exported with `--full`. Archived proof charts
+keep their original bytes and verification.
 
 Show the measured prefix through the first maximum candidate median SPS. This
 cutoff concerns candidate throughput, not the speedup ratio; retain earlier counts

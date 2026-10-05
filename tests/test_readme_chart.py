@@ -2,7 +2,12 @@ from xml.etree import ElementTree
 
 import pytest
 
-from turbobench.readme_chart import export_readme_chart, peak_rows, readme_chart
+from turbobench.readme_chart import (
+    export_readme_chart,
+    full_publication_chart,
+    peak_rows,
+    readme_chart,
+)
 from turbobench.stats import paired_statistics
 
 
@@ -39,15 +44,16 @@ def test_peak_view_keeps_complete_prefix_including_recovery(values, shown, omitt
     assert dropped == omitted
 
 
-def test_readme_view_uses_one_scale_and_shape_local_paired_uncertainty():
+def test_readme_view_uses_one_scale_and_keeps_speedup():
     chart = readme_chart(result_for([200, 400, 300]), diagnostic=False)
     svg = ElementTree.fromstring(chart)
     bars = [el for el in svg.iter() if "data-provider" in el.attrib]
     scales = [float(el.attrib["width"]) / float(el.attrib["data-sps"]) for el in bars]
     assert scales == pytest.approx([scales[0]] * 4)
     assert all(float(el.attrib["x"]) == 36 for el in bars)
-    assert "95% paired CI: 4.00\u20134.00\u00d7" in chart
-    assert "Later counts omitted here: 4" in chart
+    assert "4.00\u00d7 speedup" in chart
+    assert "95% paired CI" not in chart
+    assert "Later counts omitted here:" not in chart
     assert "upstream&lt;&amp;" in chart
     assert "DIAGNOSTIC" not in chart
     assert 'width="800"' in chart
@@ -68,5 +74,18 @@ def test_smoke_readme_chart_does_not_invent_confidence_interval():
     result["comparison"]["shapes"]["1"]["statistics"]["bootstrap"] = None
     chart = readme_chart(result, diagnostic=True)
     assert "DIAGNOSTIC" in chart
-    assert "One sample; no confidence interval" in chart
+    assert "One sample; no confidence interval" not in chart
     assert "95% paired CI" not in chart
+
+
+@pytest.mark.parametrize("renderer", [readme_chart, full_publication_chart])
+def test_publication_labels_round_sps_without_changing_bar_data(renderer):
+    result = result_for([69797.5, 124814.6])
+    result["comparison"]["shapes"]["1"]["statistics"]["median_left_sps"] = 192.6
+    svg = ElementTree.fromstring(renderer(result, diagnostic=False))
+    text = " ".join(svg.itertext())
+    assert "69,798" in text and "124,815" in text and "193" in text
+    assert "69,797.5" not in text and "124,814.6" not in text and "192.6" not in text
+    assert "95% paired CI" not in text and "Bars:" not in text
+    values = [float(el.attrib["data-sps"]) for el in svg.iter() if "data-sps" in el.attrib]
+    assert 192.6 in values and 69797.5 in values
