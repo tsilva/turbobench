@@ -61,6 +61,25 @@ New frames use `comparison-style/v3` for the `Same Actions` title and adjacent
 speedup label; their grouped bar charts are unchanged from v2. Archived v1/v2
 frames retain their original title and label placement during verification.
 
+### README view
+
+The GitHub README uses a separate, readable publication view rather than scaling
+the complete wide chart down to fit. Use an 800-unit canvas with paired horizontal
+bars, generous vertical space, large numeric SPS labels and paired 95% intervals.
+Both providers share one linear scale from zero; do not enlarge tiny upstream bars
+or use undisclosed independent scales. Grow height rather than width as counts grow.
+
+Show the measured prefix through the first maximum candidate median SPS. This
+cutoff concerns candidate throughput, not the speedup ratio; retain earlier counts
+even if they dip before a later recovery. Disclose the peak and omitted later counts
+next to the chart. Keep every measured count in the original proof, complete chart,
+and method report. This view is a derived publication export, not a replacement proof.
+Generate it with `python -m turbobench.readme_chart BENCHMARK_PROOF OUTPUT.svg`;
+the exporter verifies the input and writes an adjacent JSON provenance file binding
+the proof ID, result hash, renderer hash, count selection and output digest. Pin the
+renderer revision in the environment repository and check the actual GitHub rendering
+at README width; readers must not need to open another page to read the values.
+
 ## Policy and replay
 
 The policy's saved resolved recipe and training contract are authoritative for

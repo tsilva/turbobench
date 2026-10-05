@@ -309,6 +309,20 @@ Copy only verified exports into the environment README, preserving its adjacent
 method/limitations caption and an archive reference to the proof. Models and
 result packages stay under ignored `turbobench-results`, outside Git and wheels.
 
+For the GitHub README, export the readable peak-throughput view separately:
+
+```bash
+uv run --frozen python -m turbobench.readme_chart \
+  comparison/benchmark /path/to/environment-repo/benchmark-readme.svg
+```
+
+This verifies the immutable benchmark and writes the SVG plus an adjacent JSON
+publication record. The README view keeps the measured prefix through the first
+candidate median-SPS maximum and explicitly discloses later omitted counts.
+The original proof and its complete chart remain unchanged. Publish both export
+files, pin the renderer source revision, and retain the complete results in the
+method report. See the [README presentation constraints](comparison-media.md#readme-view).
+
 Use the project skill `.codex/skills/comparison-showcase/SKILL.md` and the
 [approved presentation reference](comparison-media.md) when refreshing assets.
 
