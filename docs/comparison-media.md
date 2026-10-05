@@ -28,8 +28,9 @@ for another run. Do not publish this fixture as a new benchmark result.
   other workloads must use an accurate title. Archived frames keep their original title.
   Leave a small visible gap between the title and both brick accents.
 - Put the candidate/upstream ratio in the center, with `speedup` directly below
-  the multiplier, separated by a small gap. The
-  bottom of each panel shows its measured SPS, with the unit immediately beside
+  the multiplier, separated by a small gap. The upper yellow divider sits 16 pixels
+  above the multiplier, without a large spacer. The bottom of each panel shows
+  its measured SPS, with the unit immediately beside
   the number regardless of its digit count. Keep the divider and settings close
   below the speedup label, without the former large empty gap. Read all numbers from verified
   evidence; do not bake them into the artwork or ask image generation to draw
@@ -66,6 +67,8 @@ frames retain their original title and label placement during verification.
 New frames use `comparison-style/v4` for the small title-accent gaps, compact
 speedup-to-settings spacing, and number-adjacent SPS units. Archived v3 frames
 retain their original geometry during verification; charts remain unchanged.
+New frames use `comparison-style/v5` to reduce the upper-divider-to-multiplier
+gap from 58 to 16 pixels. Archived v4 frames retain their original geometry.
 
 ### README view
 

@@ -28,11 +28,12 @@ NAMES = {
     "env-vizdoom-turbo": "ViZDoom-turbo",
     "vizdoom": "ViZDoom",
 }
-COMPARISON_STYLE = "comparison-style/v4"
+COMPARISON_STYLE = "comparison-style/v5"
 COMPARISON_STYLES = {
     "comparison-style/v1",
     "comparison-style/v2",
     "comparison-style/v3",
+    "comparison-style/v4",
     COMPARISON_STYLE,
 }
 
@@ -55,12 +56,13 @@ def draw_card(
         raise ValueError(f"unsupported comparison style: {style}")
     image = Image.new("RGB", SIZE, BACKGROUND)
     draw = ImageDraw.Draw(image)
-    same_actions = style in {"comparison-style/v3", COMPARISON_STYLE}
+    compact_layout = style in {"comparison-style/v4", COMPARISON_STYLE}
+    same_actions = style == "comparison-style/v3" or compact_layout
     title = "Same Actions" if same_actions else "Same Policy, Same Actions"
     _pixel(image, title, (836, 35), 3, "#f0f3f6")
     colors = ("#ff4149", "#ff8822", "#ffdd00", "#00de78", "#009cff", "#006dff")
     accent_origins = (
-        (582, 990) if style == COMPARISON_STYLE else (594, 978) if same_actions else (438, 1134)
+        (582, 990) if compact_layout else (594, 978) if same_actions else (438, 1134)
     )
     for side, origin in enumerate(accent_origins):
         for row in range(3):
@@ -84,7 +86,7 @@ def draw_card(
         draw.line((x - 7, 838, x + PANEL_SIZE[0] + 7, 838), fill="#7185ac", width=2)
         number = f"{stats[f'median_{side}_sps']:,.0f}"
         number_center, sps_center = center - 26, center + 155
-        if style == COMPARISON_STYLE:
+        if compact_layout:
             number_width, unit_width, gap = len(number) * 8 * 5, 3 * 8 * 2, 16
             group_left = center - (number_width + gap + unit_width) // 2
             number_center = group_left + number_width // 2
@@ -104,7 +106,8 @@ def draw_card(
             ),
             fill="#ffdd00" if side == "left" else "#009cff",
         )
-    draw.line((689, 370, 982, 370), fill=YELLOW, width=3)
+    upper_divider_y = 412 if style == COMPARISON_STYLE else 370
+    draw.line((689, upper_divider_y, 982, upper_divider_y), fill=YELLOW, width=3)
     ratio_scale = max(3, min(7, 295 // (len(f"{ratio:.2f}x") * 8)))
     _pixel(
         image,
@@ -115,7 +118,7 @@ def draw_card(
     )
     speedup_y = 428 + 8 * ratio_scale + 12 if same_actions else 548
     _pixel(image, "speedup", (836, speedup_y), 3, YELLOW)
-    divider_y = speedup_y + 24 + 24 if style == COMPARISON_STYLE else 607
+    divider_y = speedup_y + 24 + 24 if compact_layout else 607
     draw.line((689, divider_y, 982, divider_y), fill=YELLOW, width=3)
     settings = [
         "n_envs = 1",
