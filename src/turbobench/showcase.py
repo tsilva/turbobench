@@ -28,8 +28,8 @@ NAMES = {
     "env-vizdoom-turbo": "ViZDoom-turbo",
     "vizdoom": "ViZDoom",
 }
-COMPARISON_STYLE = "comparison-style/v2"
-COMPARISON_STYLES = {"comparison-style/v1", COMPARISON_STYLE}
+COMPARISON_STYLE = "comparison-style/v3"
+COMPARISON_STYLES = {"comparison-style/v1", "comparison-style/v2", COMPARISON_STYLE}
 
 
 def _pixel(canvas: Image.Image, text: str, center: tuple[int, int], scale: int, color: str) -> None:
@@ -43,12 +43,18 @@ def _pixel(canvas: Image.Image, text: str, center: tuple[int, int], scale: int, 
     canvas.paste(color, (center[0] - mask.width // 2, center[1]), mask)
 
 
-def draw_card(result: dict[str, Any], profile: Any, *, diagnostic: bool) -> Image.Image:
+def draw_card(
+    result: dict[str, Any], profile: Any, *, diagnostic: bool, style: str = COMPARISON_STYLE
+) -> Image.Image:
+    if style not in COMPARISON_STYLES:
+        raise ValueError(f"unsupported comparison style: {style}")
     image = Image.new("RGB", SIZE, BACKGROUND)
     draw = ImageDraw.Draw(image)
-    _pixel(image, "Same Policy, Same Actions", (836, 35), 3, "#f0f3f6")
+    title = "Same Actions" if style == COMPARISON_STYLE else "Same Policy, Same Actions"
+    _pixel(image, title, (836, 35), 3, "#f0f3f6")
     colors = ("#ff4149", "#ff8822", "#ffdd00", "#00de78", "#009cff", "#006dff")
-    for side, origin in enumerate((438, 1134)):
+    accent_origins = (594, 978) if style == COMPARISON_STYLE else (438, 1134)
+    for side, origin in enumerate(accent_origins):
         for row in range(3):
             draw.rectangle(
                 (origin + row * 8, 31 + row * 17, origin + 96 - row * 8, 37 + row * 17),
@@ -85,14 +91,16 @@ def draw_card(result: dict[str, Any], profile: Any, *, diagnostic: bool) -> Imag
         )
     draw.line((689, 370, 982, 370), fill=YELLOW, width=3)
     draw.line((689, 607, 982, 607), fill=YELLOW, width=3)
+    ratio_scale = max(3, min(7, 295 // (len(f"{ratio:.2f}x") * 8)))
     _pixel(
         image,
         f"{ratio:.2f}x",
         (836, 428),
-        max(3, min(7, 295 // (len(f"{ratio:.2f}x") * 8))),
+        ratio_scale,
         YELLOW,
     )
-    _pixel(image, "speedup", (836, 548), 3, YELLOW)
+    speedup_y = 428 + 8 * ratio_scale + 12 if style == COMPARISON_STYLE else 548
+    _pixel(image, "speedup", (836, speedup_y), 3, YELLOW)
     settings = [
         "n_envs = 1",
         f"frameskip = {profile.frame_skip}",
@@ -287,7 +295,9 @@ def generate_showcase_assets(
     return assets
 
 
-def verify_assets(root: Path, assets: Any, result: Any, diagnostic: bool) -> None:
+def verify_assets(
+    root: Path, assets: Any, result: Any, diagnostic: bool, *, style: str = COMPARISON_STYLE
+) -> None:
     ratio = (
         1 / result["comparison"]["shapes"]["1"]["statistics"]["median_paired_ratio_left_over_right"]
     )
@@ -340,7 +350,7 @@ def verify_assets(root: Path, assets: Any, result: Any, diagnostic: bool) -> Non
     with Image.open(root / "media/card.png") as card:
         if (
             card.convert("RGB").tobytes()
-            != draw_card(result, profile, diagnostic=diagnostic).tobytes()
+            != draw_card(result, profile, diagnostic=diagnostic, style=style).tobytes()
         ):
             raise ValueError("card does not match evidence and diagnostic marking")
 
@@ -348,7 +358,7 @@ def verify_assets(root: Path, assets: Any, result: Any, diagnostic: bool) -> Non
 def scaling_chart(result: Any, *, diagnostic: bool, style: str = COMPARISON_STYLE) -> str:
     if style == "comparison-style/v1":
         return _legacy_scaling_chart(result, diagnostic=diagnostic)
-    if style != COMPARISON_STYLE:
+    if style not in {"comparison-style/v2", COMPARISON_STYLE}:
         raise ValueError(f"unsupported comparison style: {style}")
     rows = sorted(result["comparison"]["shapes"].items(), key=lambda pair: int(pair[0]))
     peak = max(

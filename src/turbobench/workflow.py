@@ -460,7 +460,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
         "assets": assets,
         "pipeline_passed": True,
     }
-    snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same policy, same actions: environment throughput comparison"></a></p>\n\n![Provider throughput and speedup by environment count](chart.svg)\n\n'
+    snippet = '<p align="center"><a href="media/comparison.mp4"><img src="media/comparison.webp" width="800" alt="Same actions: environment throughput comparison"></a></p>\n\n![Provider throughput and speedup by environment count](chart.svg)\n\n'
     timing_controls = (
         "captured policy actions"
         if request["schema"] == "turbobench.comparison-request/v3"
@@ -547,7 +547,7 @@ def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
         )
     from turbobench.showcase import scaling_chart, verify_assets
 
-    verify_assets(root, bindings["assets"], result, smoke)
+    verify_assets(root, bindings["assets"], result, smoke, style=bindings["style"])
     if (root / "chart.svg").read_text() != scaling_chart(
         result, diagnostic=smoke, style=bindings["style"]
     ):

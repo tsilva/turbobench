@@ -23,10 +23,11 @@ for another run. Do not publish this fixture as a new benchmark result.
 - Put the upstream provider on the left and the candidate on the right, with
   exact display names and versions above their panels. Omit the word Original.
   Never relabel whichever provider won as the candidate.
-- For policy-backed comparisons, use `Same Policy, Same Actions`. That title
-  requires a bound policy and a verified common effective action trajectory;
-  other workloads must use an accurate title.
-- Put the candidate/upstream ratio in the center, with `speedup` below it. The
+- For new comparisons, use `Same Actions`. That title requires a verified
+  common effective action trajectory; policy-backed comparisons also bind the policy;
+  other workloads must use an accurate title. Archived frames keep their original title.
+- Put the candidate/upstream ratio in the center, with `speedup` directly below
+  the multiplier, separated by a small gap. The
   bottom of each panel shows its measured SPS. Read all numbers from verified
   evidence; do not bake them into the artwork or ask image generation to draw
   changing data. If the candidate is slower, show the real sub-1× ratio.
@@ -56,6 +57,9 @@ single sample and absent confidence interval. Keep diagnostic charts visibly
 marked, including when the candidate is slower. Never aggregate counts or add
 unmeasured environment counts. This chart presentation is `comparison-style/v2`;
 archived `comparison-style/v1` point charts retain their original verification.
+New frames use `comparison-style/v3` for the `Same Actions` title and adjacent
+speedup label; their grouped bar charts are unchanged from v2. Archived v1/v2
+frames retain their original title and label placement during verification.
 
 ## Policy and replay
 
