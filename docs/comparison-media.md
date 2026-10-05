@@ -71,11 +71,12 @@ retain their original geometry during verification; charts remain unchanged.
 
 The GitHub README uses a separate, readable publication view rather than scaling
 the complete wide chart down to fit. Use an 800-unit canvas with side-by-side
-vertical bars, a compact height (376 units for up to seven official counts), and readable
+vertical bars, a compact height (388 units for up to seven official counts), and readable
 SPS and speedup labels. Put the provider legend at the top right, with 14-unit
 legend text; use 13-unit SPS and speedup values and 14-unit environment counts.
-Keep the gap above the plot small. Below the subtitle, show a 12-unit benchmark
-CPU line from the verified result's host hardware; never substitute the rendering
+Keep a small visible gap between the header text and the plot. Below the subtitle,
+show only the processor name in 12-unit text, without a `Benchmark CPU` prefix,
+from the verified result's host hardware; never substitute the rendering
 machine's processor. Reserve extra header space only for diagnostic marking.
 Both providers share one linear scale from zero; do not enlarge tiny upstream bars
 or use undisclosed independent scales. Keep up to seven groups per row; use

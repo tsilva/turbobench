@@ -33,7 +33,7 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     # Seven groups fit the normal README width; larger future sweeps get rows.
     columns = min(7, len(rows))
     panels = math.ceil(len(rows) / columns)
-    header_height = 92 + (28 if diagnostic else 0)
+    header_height = 104 + (28 if diagnostic else 0)
     height = header_height + panels * 284
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="{height}" '
@@ -58,7 +58,7 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     if processor:
         svg.append(
             '<text x="24" y="90" font-size="12" fill="#acbde1">'
-            f"Benchmark CPU: {escape(processor)}</text>"
+            f"{escape(processor)}</text>"
         )
     if diagnostic:
         svg.append(
