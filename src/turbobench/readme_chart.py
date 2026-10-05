@@ -33,7 +33,8 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     # Seven groups fit the normal README width; larger future sweeps get rows.
     columns = min(7, len(rows))
     panels = math.ceil(len(rows) / columns)
-    height = 136 + panels * 284
+    header_height = 92 + (28 if diagnostic else 0)
+    height = header_height + panels * 284
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="{height}" '
         f'viewBox="0 0 800 {height}" role="img" aria-labelledby="title description">',
@@ -53,12 +54,18 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
             f'<rect x="482" y="{y - 12}" width="12" height="12" fill="{colors[side]}"/>'
             f'<text x="502" y="{y}" font-size="14" fill="{colors[side]}">{escape(name)}</text>'
         )
+    processor = result.get("system", {}).get("host", {}).get("cpu")
+    if processor:
+        svg.append(
+            '<text x="24" y="90" font-size="12" fill="#acbde1">'
+            f"Benchmark CPU: {escape(processor)}</text>"
+        )
     if diagnostic:
         svg.append(
-            '<text x="24" y="127" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
+            '<text x="24" y="118" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
         )
     for panel in range(panels):
-        baseline = 348 + panel * 284
+        baseline = header_height + 212 + panel * 284
         plot_height = 194
         for i in range(round(maximum / step) + 1):
             value = i * step
