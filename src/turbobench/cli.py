@@ -14,6 +14,7 @@ from turbobench.assets import discover_assets
 from turbobench.bundle import verify_bundle
 from turbobench.engine import ComparisonOptions, generate_promo_for_bundle, run_comparison
 from turbobench.parity import ParityOptions, run_parity, verify_parity_receipt
+from turbobench.privacy import public_text
 from turbobench.profiles import PROFILES, get_profile, profile_hash
 from turbobench.providers import load_providers, parse_provider_ref
 from turbobench.system import host_record, prerequisites
@@ -189,7 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "configure":
             from turbobench.defaults import configure
 
-            print(json.dumps(configure(args.benchmark_host, args.policy), indent=2))
+            config = configure(args.benchmark_host, args.policy)
+            public_config = {**config, "benchmark_host": "<configured private machine>"}
+            if "policy" in public_config:
+                public_config["policy"] = "<locked private policy path>"
+            print(json.dumps(public_config, indent=2))
             return 0
         if args.command == "policy-pack":
             from turbobench.proofs import pack_policy, pack_policy_resolved
@@ -244,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             integrity = verify_bundle(args.bundle)
             if not integrity["passed"]:
                 raise ValueError("bundle verification failed: " + "; ".join(integrity["errors"]))
-            print((args.bundle / "report.md").read_text(encoding="utf-8"), end="")
+            print(public_text((args.bundle / "report.md").read_text(encoding="utf-8")), end="")
             return 0
         if args.command == "promo":
             result = generate_promo_for_bundle(
@@ -261,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
     except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as exc:
-        parser.exit(2, f"turbobench: error: {exc}\n")
+        parser.exit(2, f"turbobench: error: {public_text(str(exc))}\n")
     return 2
 
 
@@ -323,7 +328,7 @@ def _compare(args: argparse.Namespace, command: list[str]) -> int:
             f"{'Policy benchmark' if args.policy_benchmark else 'Showcase'}: {args.profile}; {args.left} vs {args.right}"
         )
         _print_progress(
-            f"Policy: {args.policy}; benchmark: {args.benchmark_host}; render: local; output: {output}"
+            f"Locked policy selected; benchmark: remote measurement host; render: local; output: {output}"
         )
         bundle = run_workflow(args, output, _print_progress)
         publication = export_publication(bundle)
@@ -426,4 +431,4 @@ def _default_parity_output(profile_id: str) -> Path:
 
 
 def _print_progress(message: str) -> None:
-    print(f"turbobench: {message}", file=sys.stderr, flush=True)
+    print(f"turbobench: {public_text(message)}", file=sys.stderr, flush=True)

@@ -25,3 +25,7 @@ The project `build-release` skill composes `$release-workflow` from
 `/Users/tsilva/.codex/skills/release-workflow/SKILL.md`.
 Read both for release work; keep project commands, version policy, artifact
 requirements, and approval gates in the project adapter.
+
+## Benchmark infrastructure privacy
+
+Never publish or print benchmark machine hostnames, IP addresses, ports, SSH aliases, login names, private tracking URLs, or other machine access/location details. Report hardware specifications only. Keep historical proofs with access details private; do not export or upload them.

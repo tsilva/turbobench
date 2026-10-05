@@ -166,8 +166,12 @@ in its `demo-manifest.json`. Its MP4 SHA-256 is
 its selected policy SHA-256 is
 `dcfd8a41bcc7426ac0ef2f108d07a20f2ffb2c0c22745e6690c6065c01d5935a`.
 Its MLflow run is
-[FirstWall PPO](https://mlflow-beast3.tsilva.eu/#/experiments/6/runs/e10b9f9dfec247b881d2eac3979dda37).
+FirstWall PPO.
 
 See [the implemented workflow](comparison-workflow.md) for remote benchmarks
 and versioned proof packages. The reusable renderer uses the bundled SIL OFL
 Press Start 2P font; its license ships beside the font in `src/turbobench/fonts`.
+
+### Infrastructure privacy
+
+Show benchmark hardware only. Never include machine addresses, IPs, ports, SSH aliases, login names, or private tracking-server URLs in publication files or output. Retain non-routable training run IDs. The publication exporter rejects proofs containing private access details; preserve such archives privately until privacy-safe evidence is prepared.

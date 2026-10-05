@@ -29,7 +29,7 @@ with `--policy`. The package contains the exact checkpoint, saved recipe/model m
 effective raw actions, run link, limitations, schema documents, and hash manifest.
 The tested example checkpoint is `dcfd8a41bcc7426ac0ef2f108d07a20f2ffb2c0c22745e6690c6065c01d5935a`,
 step 191,561,728 from
-[FirstWall PPO](https://mlflow-beast3.tsilva.eu/#/experiments/6/runs/e10b9f9dfec247b881d2eac3979dda37).
+FirstWall PPO.
 
 ```bash
 # Run from your TurboBench checkout on the render machine.

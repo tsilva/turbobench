@@ -137,7 +137,7 @@ generic resolution. Other live environment integrations can migrate incrementall
   change. Receipts and caches cannot cross different resolved workload hashes.
 - Smoke remains n_envs=1,2 once per provider, with zero warmups and no official
   claim. Full sampling, two-host separation, and media style remain unchanged.
-- Run the existing suite and a real smoke on `beast3-ssh.tsilva.eu`, rendering
+- Run the existing suite and a real smoke on `private benchmark machine`, rendering
   locally, before switching the default showcase path. Public docs use a generic
   SSH host. An official full performance run remains a separate validation step.
 

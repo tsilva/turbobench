@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from turbobench.privacy import public_text
 from turbobench.util import atomic_write
 
 
@@ -96,7 +97,7 @@ def render_report(result: dict[str, Any]) -> str:
                 "",
             )
         )
-    return "\n".join(lines)
+    return public_text("\n".join(lines))
 
 
 def render_chart(result: dict[str, Any]) -> str:

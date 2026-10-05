@@ -14,6 +14,7 @@ from typing import Any
 
 from turbobench.assets import discover_assets
 from turbobench.correctness import compare_replays
+from turbobench.privacy import training_reference
 from turbobench.profiles import profile_hash, promo_action_hash
 from turbobench.proofs import finalize_proof, require_proof, validate_document
 from turbobench.runtime import harness_source_hash, prepare_runtime
@@ -446,7 +447,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
     contract = policy["bindings"]["contract"]
     with (root / "report.md").open("a") as report:
         report.write(
-            f"\n## Policy and showcase\n\nCheckpoint: `{contract['checkpoint_sha256']}`; step {contract['checkpoint_step']}.\n\nTracking: {contract['mlflow_url']}\n\nLimitations: {contract['limitations']}\n\nExcerpt: {contract['decisions']} / {contract['total_captured_decisions']} captured decisions.\n\n"
+            f"\n## Policy and showcase\n\nCheckpoint: `{contract['checkpoint_sha256']}`; step {contract['checkpoint_step']}.\n\nTracking: {training_reference(contract['mlflow_url'])}\n\nLimitations: {contract['limitations']}\n\nExcerpt: {contract['decisions']} / {contract['total_captured_decisions']} captured decisions.\n\n"
             + "\n".join(_showcase_benchmark_differences(contract, request))
             + "\n\nPlayback illustrates shape-1 throughput with common 4x time compression; it is not a wall-clock recording.\n"
         )
@@ -466,7 +467,7 @@ def render_showcase(root: Path, progress: Any = print) -> dict[str, Any]:
         if request["schema"] == "turbobench.comparison-request/v3"
         else "seeded controls"
     )
-    snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses {timing_controls} and excludes inference and task/context wrappers. Policy: {contract['mlflow_url']}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
+    snippet += f"{'SMOKE / DIAGNOSTIC; no validated performance claim. ' if request['smoke'] else ''}Measured on {benchmark['bindings']['benchmark_machine']['hardware'].get('cpu', 'the benchmark host')}; rendered on a separate host. Frame skip={profile.frame_skip}, stack={profile.frame_stack}; n_threads=n_envs, obs_copy=copy. Timing uses {timing_controls} and excludes inference and task/context wrappers. Policy: {training_reference(contract['mlflow_url'])}. {contract['limitations']} See [method and shape-local SPS](report.md) and verify the archived proof with `turbobench verify`.\n"
     (root / "README-snippet.md").write_text(snippet)
     version = (
         3
@@ -555,7 +556,7 @@ def verify_showcase(root: Path, bindings: dict[str, Any]) -> None:
 
 
 def _run(argv: list[str]) -> str:
-    process = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=None, check=False)
+    process = subprocess.run(argv, text=True, capture_output=True, check=False)
     if process.returncode:
         raise RuntimeError(
             f"{argv[0]} failed with exit status {process.returncode}; partial workflow data preserved"
@@ -776,7 +777,7 @@ def finalize_policy_benchmark(root: Path) -> dict[str, Any]:
     with (root / "report.md").open("a") as report:
         report.write(
             f"\n## Locked policy workload\n\nCheckpoint: `{contract['checkpoint_sha256']}`; "
-            f"training step {contract['checkpoint_step']}.\n\nTracking: {contract['mlflow_url']}\n\n"
+            f"training step {contract['checkpoint_step']}.\n\nTracking: {training_reference(contract['mlflow_url'])}\n\n"
             f"Measured all {contract['decisions']} captured decisions of {contract['total_captured_decisions']}; "
             "every lane replays the same effective controls with the captured reset seed. "
             "Repetitions restart from that same seed. Initial seeded no-op reset is outside timing. "

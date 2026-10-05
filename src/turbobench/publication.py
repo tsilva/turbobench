@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit
 
 from turbobench import __version__
 from turbobench.bundle import verify_bundle
+from turbobench.privacy import private_url, public_text, require_public_proof, training_reference
 from turbobench.readme_chart import PUBLICATION_NAMES, peak_rows, write_publication_chart
 from turbobench.runtime import harness_source_hash
 from turbobench.stats import reciprocal_statistics
@@ -164,7 +165,7 @@ def render_benchmarks(
     ]
     if contract:
         lines += [
-            f"- **Policy:** [training run]({contract['mlflow_url']}); "
+            f"- **Policy:** {training_reference(contract['mlflow_url'])}; "
             f"{contract['decisions']:,} of {contract['total_captured_decisions']:,} captured decisions; "
             f"{contract['reset_noop_prefix']} raw reset noops. Checkpoint, saved recipe, and effective actions are locked in `policy/`. "
             "Every lane uses the same controls; this does not estimate a policy success rate.",
@@ -231,7 +232,7 @@ def render_benchmarks(
             f"- [Proof {record['proof_id'][:12]}]({record['proof_url']})"
             for record in publication["earlier_proofs"]
         ]
-    return "\n".join(lines) + "\n"
+    return public_text("\n".join(lines) + "\n")
 
 
 def export_publication(
@@ -249,12 +250,15 @@ def export_publication(
     if output.exists():
         raise FileExistsError(output)
     if proof_url and (
-        urlsplit(proof_url).scheme not in {"https", "http"} or any(c in proof_url for c in "\n\r()")
+        urlsplit(proof_url).scheme not in {"https", "http"}
+        or private_url(proof_url)
+        or any(c in proof_url for c in "\n\r()")
     ):
         raise ValueError("proof URL must be an HTTP(S) archive or release link")
     verification = verify_bundle(proof)
     if not verification["passed"]:
         raise ValueError("proof verification failed: " + "; ".join(verification["errors"]))
+    require_public_proof(proof)
     manifest = read_json(proof / "manifest.json")
     benchmark = proof / "benchmark" if (proof / "benchmark").is_dir() else proof
     if not (benchmark / "result.json").is_file():
@@ -301,6 +305,7 @@ def export_publication(
         "earlier_proofs": [],
     }
     if previous:
+        require_public_proof(previous)
         prior = read_json(previous / "publication.json")
         if prior.get("format") != "turbobench.publication/v1":
             raise ValueError("unsupported previous publication")
