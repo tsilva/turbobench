@@ -26,9 +26,12 @@ for another run. Do not publish this fixture as a new benchmark result.
 - For new comparisons, use `Same Actions`. That title requires a verified
   common effective action trajectory; policy-backed comparisons also bind the policy;
   other workloads must use an accurate title. Archived frames keep their original title.
+  Leave a small visible gap between the title and both brick accents.
 - Put the candidate/upstream ratio in the center, with `speedup` directly below
   the multiplier, separated by a small gap. The
-  bottom of each panel shows its measured SPS. Read all numbers from verified
+  bottom of each panel shows its measured SPS, with the unit immediately beside
+  the number regardless of its digit count. Keep the divider and settings close
+  below the speedup label, without the former large empty gap. Read all numbers from verified
   evidence; do not bake them into the artwork or ask image generation to draw
   changing data. If the candidate is slower, show the real sub-1× ratio.
 - Stack settings vertically below the speedup. Use small, subdued slate text
@@ -60,6 +63,9 @@ archived `comparison-style/v1` point charts retain their original verification.
 New frames use `comparison-style/v3` for the `Same Actions` title and adjacent
 speedup label; their grouped bar charts are unchanged from v2. Archived v1/v2
 frames retain their original title and label placement during verification.
+New frames use `comparison-style/v4` for the small title-accent gaps, compact
+speedup-to-settings spacing, and number-adjacent SPS units. Archived v3 frames
+retain their original geometry during verification; charts remain unchanged.
 
 ### README view
 

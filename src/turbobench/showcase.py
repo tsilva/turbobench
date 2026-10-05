@@ -28,8 +28,13 @@ NAMES = {
     "env-vizdoom-turbo": "ViZDoom-turbo",
     "vizdoom": "ViZDoom",
 }
-COMPARISON_STYLE = "comparison-style/v3"
-COMPARISON_STYLES = {"comparison-style/v1", "comparison-style/v2", COMPARISON_STYLE}
+COMPARISON_STYLE = "comparison-style/v4"
+COMPARISON_STYLES = {
+    "comparison-style/v1",
+    "comparison-style/v2",
+    "comparison-style/v3",
+    COMPARISON_STYLE,
+}
 
 
 def _pixel(canvas: Image.Image, text: str, center: tuple[int, int], scale: int, color: str) -> None:
@@ -50,10 +55,13 @@ def draw_card(
         raise ValueError(f"unsupported comparison style: {style}")
     image = Image.new("RGB", SIZE, BACKGROUND)
     draw = ImageDraw.Draw(image)
-    title = "Same Actions" if style == COMPARISON_STYLE else "Same Policy, Same Actions"
+    same_actions = style in {"comparison-style/v3", COMPARISON_STYLE}
+    title = "Same Actions" if same_actions else "Same Policy, Same Actions"
     _pixel(image, title, (836, 35), 3, "#f0f3f6")
     colors = ("#ff4149", "#ff8822", "#ffdd00", "#00de78", "#009cff", "#006dff")
-    accent_origins = (594, 978) if style == COMPARISON_STYLE else (438, 1134)
+    accent_origins = (
+        (582, 990) if style == COMPARISON_STYLE else (594, 978) if same_actions else (438, 1134)
+    )
     for side, origin in enumerate(accent_origins):
         for row in range(3):
             draw.rectangle(
@@ -74,8 +82,15 @@ def draw_card(
             (x - 4, y - 4, x + PANEL_SIZE[0] + 3, y + PANEL_SIZE[1] + 3), outline="#7185ac", width=2
         )
         draw.line((x - 7, 838, x + PANEL_SIZE[0] + 7, 838), fill="#7185ac", width=2)
-        _pixel(image, f"{stats[f'median_{side}_sps']:,.0f}", (center - 26, 860), 5, "#f0f3f6")
-        _pixel(image, "SPS", (center + 155, 880), 2, "#acbde1")
+        number = f"{stats[f'median_{side}_sps']:,.0f}"
+        number_center, sps_center = center - 26, center + 155
+        if style == COMPARISON_STYLE:
+            number_width, unit_width, gap = len(number) * 8 * 5, 3 * 8 * 2, 16
+            group_left = center - (number_width + gap + unit_width) // 2
+            number_center = group_left + number_width // 2
+            sps_center = group_left + number_width + gap + unit_width // 2
+        _pixel(image, number, (number_center, 860), 5, "#f0f3f6")
+        _pixel(image, "SPS", (sps_center, 880), 2, "#acbde1")
         accent_x = x - 13 if side == "left" else x + PANEL_SIZE[0] - 87
         draw.rectangle(
             (accent_x, 863, accent_x + 99, 869), fill="#ff4149" if side == "left" else "#00de78"
@@ -90,7 +105,6 @@ def draw_card(
             fill="#ffdd00" if side == "left" else "#009cff",
         )
     draw.line((689, 370, 982, 370), fill=YELLOW, width=3)
-    draw.line((689, 607, 982, 607), fill=YELLOW, width=3)
     ratio_scale = max(3, min(7, 295 // (len(f"{ratio:.2f}x") * 8)))
     _pixel(
         image,
@@ -99,8 +113,10 @@ def draw_card(
         ratio_scale,
         YELLOW,
     )
-    speedup_y = 428 + 8 * ratio_scale + 12 if style == COMPARISON_STYLE else 548
+    speedup_y = 428 + 8 * ratio_scale + 12 if same_actions else 548
     _pixel(image, "speedup", (836, speedup_y), 3, YELLOW)
+    divider_y = speedup_y + 24 + 24 if style == COMPARISON_STYLE else 607
+    draw.line((689, divider_y, 982, divider_y), fill=YELLOW, width=3)
     settings = [
         "n_envs = 1",
         f"frameskip = {profile.frame_skip}",
@@ -115,7 +131,7 @@ def draw_card(
             f"{'mask_top' if profile.crop_mode == 'mask' else 'crop_top'} = {profile.crop_top}"
         )
     for index, setting in enumerate(settings):
-        _pixel(image, setting, (836, 633 + index * 25), 2, MUTED)
+        _pixel(image, setting, (836, divider_y + 26 + index * 25), 2, MUTED)
     if diagnostic:
         # Visible marking stays outside gameplay and the muted recipe block.
         _pixel(image, "SMOKE / DIAGNOSTIC - NO PERFORMANCE CLAIM", (836, 86), 2, "#c8837c")
@@ -358,7 +374,7 @@ def verify_assets(
 def scaling_chart(result: Any, *, diagnostic: bool, style: str = COMPARISON_STYLE) -> str:
     if style == "comparison-style/v1":
         return _legacy_scaling_chart(result, diagnostic=diagnostic)
-    if style not in {"comparison-style/v2", COMPARISON_STYLE}:
+    if style not in COMPARISON_STYLES:
         raise ValueError(f"unsupported comparison style: {style}")
     rows = sorted(result["comparison"]["shapes"].items(), key=lambda pair: int(pair[0]))
     peak = max(
