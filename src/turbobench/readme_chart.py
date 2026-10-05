@@ -33,7 +33,7 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     # Seven groups fit the normal README width; larger future sweeps get rows.
     columns = min(7, len(rows))
     panels = math.ceil(len(rows) / columns)
-    header_height = 104 + (28 if diagnostic else 0)
+    header_height = 74 + (28 if diagnostic else 0)
     height = header_height + panels * 284
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="{height}" '
@@ -44,8 +44,7 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
         "Later counts and exact uncertainty remain in the benchmark report.</desc>",
         f'<rect width="100%" height="100%" fill="{BACKGROUND}"/>',
         '<g font-family="Arial, Helvetica, sans-serif" fill="#f0f3f6">',
-        '<text x="24" y="38" font-size="30" font-weight="700">Scaling to peak throughput</text>',
-        '<text x="24" y="68" font-size="18" fill="#acbde1">Environment steps / second · higher is faster</text>',
+        '<text x="24" y="38" font-size="18" fill="#acbde1">Environment steps / second · higher is faster</text>',
     ]
     for side, y in (("left", 32), ("right", 55)):
         provider = result["comparison"][side]
@@ -57,12 +56,12 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     processor = result.get("system", {}).get("host", {}).get("cpu")
     if processor:
         svg.append(
-            '<text x="24" y="90" font-size="12" fill="#acbde1">'
+            '<text x="24" y="60" font-size="12" fill="#acbde1">'
             f"{escape(processor)}</text>"
         )
     if diagnostic:
         svg.append(
-            '<text x="24" y="118" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
+            '<text x="24" y="88" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
         )
     for panel in range(panels):
         baseline = header_height + 212 + panel * 284
