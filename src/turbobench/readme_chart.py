@@ -26,74 +26,72 @@ def readme_chart(result: dict[str, Any], *, diagnostic: bool) -> str:
     peak = max(
         row["statistics"][f"median_{side}_sps"] for _, row in rows for side in ("left", "right")
     )
-    magnitude = 10 ** math.floor(math.log10(peak / 4))
-    step = next(n * magnitude for n in (1, 2, 5, 10) if n * magnitude >= peak / 4)
-    maximum = math.ceil(peak / step) * step
-    height = 280 + len(rows) * 108 + 16
+    magnitude = 10 ** math.floor(math.log10(peak / 5))
+    step = next(n * magnitude for n in (1, 2, 5, 10) if n * magnitude >= peak / 5)
+    maximum = math.ceil(peak * 1.12 / step) * step
     colors = {"left": "#acbde1", "right": YELLOW}
+    # Seven groups fit the normal README width; larger future sweeps get rows.
+    columns = min(7, len(rows))
+    panels = math.ceil(len(rows) / columns)
+    height = 136 + panels * 284
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="{height}" '
         f'viewBox="0 0 800 {height}" role="img" aria-labelledby="title description">',
         '<title id="title">Environment throughput through the candidate peak</title>',
-        '<desc id="description">Paired horizontal bars use one linear scale from zero. '
-        "Every measured count through the first candidate throughput maximum is shown. "
-        "Later counts remain in the complete benchmark proof. "
-        "Speedup uses paired candidate/upstream ratios. Exact values and uncertainty remain in the benchmark report.</desc>",
+        '<desc id="description">Side-by-side vertical bars use one linear scale from zero. '
+        "The measured prefix through the first candidate throughput maximum is shown. "
+        "Later counts and exact uncertainty remain in the benchmark report.</desc>",
         f'<rect width="100%" height="100%" fill="{BACKGROUND}"/>',
         '<g font-family="Arial, Helvetica, sans-serif" fill="#f0f3f6">',
-        '<text x="32" y="55" font-size="38" font-weight="700">Scaling to peak throughput</text>',
-        '<text x="32" y="98" font-size="26">Environment steps / second · higher is faster</text>',
+        '<text x="24" y="38" font-size="30" font-weight="700">Scaling to peak throughput</text>',
+        '<text x="24" y="68" font-size="18" fill="#acbde1">Environment steps / second · higher is faster</text>',
     ]
-    for side, y in (("left", 141), ("right", 182)):
+    for side, x in (("left", 24), ("right", 300)):
         provider = result["comparison"][side]
         name = f"{NAMES.get(provider['provider'], provider['provider'])} {provider['version']}"
         svg.append(
-            f'<rect x="32" y="{y - 20}" width="22" height="22" '
-            f'fill="{colors[side]}"/><text x="66" y="{y}" font-size="28" '
-            f'fill="{colors[side]}">{escape(name)}</text>'
+            f'<rect x="{x}" y="85" width="16" height="16" fill="{colors[side]}"/>'
+            f'<text x="{x + 24}" y="100" font-size="18" fill="{colors[side]}">{escape(name)}</text>'
         )
     if diagnostic:
         svg.append(
-            '<text x="32" y="219" fill="#ff7b72" font-size="24">'
-            "DIAGNOSTIC · no validated performance claim</text>"
+            '<text x="24" y="127" fill="#ff7b72" font-size="16">DIAGNOSTIC · no validated performance claim</text>'
         )
-    else:
-        svg.append(
-            '<text x="32" y="219" fill="#acbde1" font-size="24">'
-            "Both bars use the same linear scale, starting at zero</text>"
-        )
-    for i in range(round(maximum / step) + 1):
-        value = i * step
-        x = 36 + value / maximum * 520
-        label = f"{value / 1000:g}k" if value >= 1000 else f"{value:g}"
-        svg.append(
-            f'<text x="{x:.3f}" y="258" text-anchor="middle" '
-            f'font-size="23" fill="#acbde1">{label}</text>'
-        )
-    svg.append(
-        '<text x="768" y="258" text-anchor="end" font-size="23" fill="#acbde1">Median SPS</text>'
-    )
-    for index, (shape, row) in enumerate(rows):
-        y = 298 + index * 108
-        stats = row["statistics"]
-        ratio = 1 / stats["median_paired_ratio_left_over_right"]
-        svg.append(
-            f'<g data-n-envs="{shape}"><text x="32" y="{y}" font-size="28" '
-            f'font-weight="700">n_envs = {shape}</text>'
-            f'<text x="768" y="{y}" text-anchor="end" fill="{YELLOW}" '
-            f'font-size="28" font-weight="700">{ratio:.2f}\u00d7 speedup</text>'
-        )
-        for side, offset in (("left", 16), ("right", 46)):
-            sps = stats[f"median_{side}_sps"]
-            width = sps / maximum * 520
+    for panel in range(panels):
+        baseline = 348 + panel * 284
+        plot_height = 194
+        for i in range(round(maximum / step) + 1):
+            value = i * step
+            y = baseline - value / maximum * plot_height
+            label = f"{value / 1000:g}k" if value >= 1000 else f"{value:g}"
             svg.append(
-                f'<rect data-provider="{side}" data-sps="{sps}" '
-                f'x="36" y="{y + offset}" width="{width:.6f}" height="18" '
-                f'fill="{colors[side]}"/>'
-                f'<text x="768" y="{y + offset + 19}" text-anchor="end" '
-                f'font-size="28" fill="{colors[side]}">{sps:,.0f}</text>'
+                f'<path d="M70 {y:.3f} H778" stroke="#30363d"/>'
+                f'<text x="60" y="{y + 5:.3f}" text-anchor="end" font-size="14" fill="#acbde1">{label}</text>'
             )
-        svg.append(f'<path d="M32 {y + 89} H768" stroke="#30363d"/></g>')
+        svg.append(
+            f'<text x="60" y="{baseline + 29}" text-anchor="end" font-size="14" fill="#acbde1">n_envs</text>'
+            f'<text x="60" y="{baseline + 58}" text-anchor="end" font-size="14" fill="#acbde1">Speedup</text>'
+        )
+        for index, (shape, row) in enumerate(rows[panel * columns : (panel + 1) * columns]):
+            center = 70 + (index + 0.5) * 708 / columns
+            stats = row["statistics"]
+            ratio = 1 / stats["median_paired_ratio_left_over_right"]
+            svg.append(f'<g data-n-envs="{shape}">')
+            for side, x in (("left", center - 30), ("right", center + 4)):
+                sps = stats[f"median_{side}_sps"]
+                bar_height = sps / maximum * plot_height
+                top = baseline - bar_height
+                svg.append(
+                    f'<rect data-provider="{side}" data-sps="{sps}" x="{x:.3f}" y="{top:.6f}" '
+                    f'width="26" height="{bar_height:.6f}" fill="{colors[side]}"/>'
+                    f'<text x="{x + 13:.3f}" y="{top - 8:.3f}" text-anchor="middle" '
+                    f'font-size="17" fill="{colors[side]}">{sps:,.0f}</text>'
+                )
+            svg.append(
+                f'<text x="{center:.3f}" y="{baseline + 29}" text-anchor="middle" font-size="18">{shape}</text>'
+                f'<text x="{center:.3f}" y="{baseline + 58}" text-anchor="middle" font-size="17" '
+                f'font-weight="700" fill="{YELLOW}">{ratio:.2f}\u00d7</text></g>'
+            )
     svg.append("</g></svg>")
     return "\n".join(svg) + "\n"
 

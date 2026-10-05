@@ -48,10 +48,13 @@ def test_readme_view_uses_one_scale_and_keeps_speedup():
     chart = readme_chart(result_for([200, 400, 300]), diagnostic=False)
     svg = ElementTree.fromstring(chart)
     bars = [el for el in svg.iter() if "data-provider" in el.attrib]
-    scales = [float(el.attrib["width"]) / float(el.attrib["data-sps"]) for el in bars]
+    scales = [float(el.attrib["height"]) / float(el.attrib["data-sps"]) for el in bars]
     assert scales == pytest.approx([scales[0]] * 4)
-    assert all(float(el.attrib["x"]) == 36 for el in bars)
-    assert "4.00\u00d7 speedup" in chart
+    baselines = [float(el.attrib["y"]) + float(el.attrib["height"]) for el in bars]
+    assert baselines == pytest.approx([baselines[0]] * 4)
+    assert float(bars[0].attrib["x"]) + float(bars[0].attrib["width"]) < float(bars[1].attrib["x"])
+    assert int(svg.attrib["height"]) <= 450
+    assert "4.00\u00d7" in chart
     assert "95% paired CI" not in chart
     assert "Later counts omitted here:" not in chart
     assert "upstream&lt;&amp;" in chart
