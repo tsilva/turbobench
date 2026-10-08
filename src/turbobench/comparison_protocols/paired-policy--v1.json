@@ -1,0 +1,31 @@
+{
+  "id": "paired-policy/v1",
+  "parity": {
+    "quick_shapes": [
+      1
+    ],
+    "reset_samples": 256,
+    "shapes": [
+      1,
+      4
+    ],
+    "snapshot_prefix_steps": 128,
+    "snapshot_suffix_steps": 128
+  },
+  "run": {
+    "action_stream_version": "captured-policy/v1",
+    "full_pairs": 7,
+    "full_parity_steps": 4096,
+    "light_pairs": 2,
+    "measurement_shapes": [
+      1,
+      16,
+      32
+    ],
+    "measurement_steps": 256,
+    "quick_parity_steps": 32,
+    "seed": 123,
+    "warmup_pairs": 1
+  },
+  "schema": "turbobench.comparison-protocol/v1"
+}

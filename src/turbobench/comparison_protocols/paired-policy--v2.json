@@ -1,0 +1,48 @@
+{
+  "id": "paired-policy/v2",
+  "parity": {
+    "quick_shapes": [
+      1
+    ],
+    "reset_samples": 256,
+    "shapes": [
+      1,
+      4
+    ],
+    "snapshot_prefix_steps": 128,
+    "snapshot_suffix_steps": 128
+  },
+  "run": {
+    "action_stream_version": "captured-policy/v1",
+    "full_pairs": 7,
+    "full_parity_steps": 4096,
+    "light_pairs": 2,
+    "measurement_shapes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024
+    ],
+    "measurement_steps": 256,
+    "quick_parity_steps": 32,
+    "seed": 123,
+    "warmup_pairs": 1
+  },
+  "scaling": {
+    "comparison": "previous_best_median_sps",
+    "downgrade_fraction": 0.05,
+    "max_n_envs": 1024,
+    "minimum_gain": 0.03,
+    "plateau_confirmations": 2,
+    "schema": "turbobench.scaling-rule/v1",
+    "stop_when": "both_providers_saturated"
+  },
+  "schema": "turbobench.comparison-protocol/v2"
+}

@@ -5,29 +5,29 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from turbobench.correctness import compare_replays, compare_traces
+from turbobench.lifecycle import execution_spec
 from turbobench.profiles import (
     action_stream_hash,
-    benchmark_actions,
+    canonical_actions,
     get_profile,
     promo_action_hash,
     promo_actions,
 )
 from turbobench.runner import (
     Adapter,
-    BreakoutPaddleNormalizer,
     FakeAdapter,
-    ScalarPreprocessingEnv,
     ScalarWorkerConfig,
     _button_masks,
     _canonical_raw_rgb,
     _canonical_stella_rgb,
     _comparison_raw_rgb,
     _create_retro_overlay,
-    _needs_legacy_breakout_paddle_normalization,
     _normalize_scalar_rgb,
     _semantic_raw_rgb,
+    _snapshot_episode_window,
     _turbo_v2_options,
     execute,
     fractional_area_resize,
@@ -36,8 +36,19 @@ from turbobench.runner import (
 )
 
 
+def test_snapshot_continuation_stops_after_the_first_lifecycle_boundary() -> None:
+    trace = [
+        {"step": 1, "reset_lanes": []},
+        {"step": 2, "reset_lanes": [0]},
+        {"step": 3, "reset_lanes": []},
+    ]
+
+    assert _snapshot_episode_window(trace, 0, 3) == trace[:2]
+    assert _snapshot_episode_window(trace, 2, 1) == trace[2:]
+
+
 def test_turbo_provider_options_spell_out_every_benchmark_semantic() -> None:
-    profile = get_profile("breakout/start-v2")
+    profile = get_profile("breakout/start-v1")
     options = _turbo_v2_options(profile, 16, profile.frame_skip)
     assert tuple(options) == (
         "state",
@@ -92,7 +103,7 @@ def test_button_mapping_translates_semantics_through_advertised_order() -> None:
 def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> None:
     direct = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
-    for profile_id in ("supermario/canonical-v1", "breakout/start-v1"):
+    for profile_id in ("supermario/world1-v1", "breakout/start-v1"):
         profile = get_profile(profile_id)
         np.testing.assert_array_equal(
             _canonical_raw_rgb(expanded, profile),
@@ -101,7 +112,7 @@ def test_cartridge_raw_rgb_normalization_preserves_native_rgb565_values() -> Non
 
 
 def test_exact_mario_raw_frames_decode_to_lossless_native_rgb565_codes() -> None:
-    profile = get_profile("supermario/canonical-v2")
+    profile = get_profile("supermario/world1-v1")
     native = np.asarray([[[88, 148, 248]]], dtype=np.uint8)
     expanded = np.asarray([[[90, 149, 255]]], dtype=np.uint8)
     np.testing.assert_array_equal(
@@ -129,7 +140,7 @@ def test_upstream_atari_scalar_policy_pixels_preserve_bgr_transport() -> None:
 
 
 def test_stable_retro_turbo_breakout_render_is_normalized_for_comparison() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     bgr = np.asarray([[[72, 72, 205], [139, 141, 139]]], dtype=np.uint8)
     np.testing.assert_array_equal(
         _comparison_raw_rgb(bgr, profile, "env-stableretro-turbo"),
@@ -138,7 +149,7 @@ def test_stable_retro_turbo_breakout_render_is_normalized_for_comparison() -> No
 
 
 def test_original_stable_retro_breakout_render_is_normalized_for_comparison() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     bgr = np.asarray([[[72, 72, 205], [139, 141, 139]]], dtype=np.uint8)
     np.testing.assert_array_equal(
         _comparison_raw_rgb(bgr, profile, "stable-retro"),
@@ -147,7 +158,7 @@ def test_original_stable_retro_breakout_render_is_normalized_for_comparison() ->
 
 
 def test_current_breakout_metadata_records_only_transport_normalization() -> None:
-    profile = get_profile("breakout/start-v3")
+    profile = get_profile("breakout/start-v1")
     env = SimpleNamespace(num_envs=1, buttons=("BUTTON",), metadata={}, capabilities={})
     for provider in ("stable-retro", "env-stableretro-turbo"):
         metadata = Adapter(env, profile, provider, native_discrete=True).metadata()
@@ -181,7 +192,7 @@ def test_exact_upstream_atari_separates_policy_bytes_from_render_transport() -> 
 
 
 def test_scalar_retro_overlay_exposes_every_canonical_state(tmp_path: Path) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     rom = tmp_path / "game.nes"
     rom.write_bytes(b"rom")
     info = tmp_path / "data.json"
@@ -228,110 +239,6 @@ def test_scalar_breakout_overlay_uses_runtime_compatible_packaged_state(tmp_path
         assert not (game / "Start.state").exists()
     finally:
         overlay.cleanup()
-
-
-def test_upstream_breakout_paddle_shim_matches_corrected_stella_repeat_sequence() -> None:
-    normalizer = BreakoutPaddleNormalizer()
-
-    def action(label: str) -> np.ndarray:
-        value = np.zeros(8, dtype=np.int8)
-        if label == "left":
-            value[6] = 1
-        elif label == "right":
-            value[7] = 1
-        return value
-
-    positions = []
-    for label in ("noop", "noop", "right", "left", "left"):
-        for _ in range(4):
-            normalizer.step(action(label))
-        positions.append(normalizer.x)
-    assert positions == [31, 26, 26, 25, 17]
-
-    frame = np.zeros((210, 160, 3), dtype=np.uint8)
-    frame[189:193, 8:24] = [200, 72, 72]
-    corrected = normalizer.normalize_frame(frame)
-    assert not corrected[189:193, 8:17].any()
-    assert np.all(corrected[189:193, 17:33] == [200, 72, 72])
-
-
-def test_upstream_breakout_paddle_shim_is_scoped_to_historical_v1() -> None:
-    base = {
-        "provider": "stable-retro",
-        "game": "Breakout-Atari2600-v0",
-        "state": "Start",
-        "integration_path": None,
-        "frame_skip": 4,
-        "frame_stack": 4,
-        "crop_top": 0,
-        "crop_bottom": 0,
-        "crop_mode": "remove",
-        "grayscale": True,
-        "resize": (84, 84),
-    }
-    assert _needs_legacy_breakout_paddle_normalization(
-        ScalarWorkerConfig(**base, profile_id="breakout/start-v1")
-    )
-    assert not _needs_legacy_breakout_paddle_normalization(
-        ScalarWorkerConfig(**base, profile_id="breakout/start-v3")
-    )
-
-
-def test_upstream_breakout_reset_advances_blank_tia_frame(monkeypatch) -> None:
-    class Box:
-        def __init__(self, **kwargs) -> None:
-            self.__dict__.update(kwargs)
-
-    monkeypatch.setitem(
-        __import__("sys").modules, "gymnasium", SimpleNamespace(spaces=SimpleNamespace(Box=Box))
-    )
-
-    class TransientBlankEnv:
-        buttons = ("BUTTON",)
-        action_space = SimpleNamespace(shape=(1,))
-
-        def __init__(self) -> None:
-            self.calls = 0
-            self.steps = 0
-            self.unwrapped = self
-            self.metadata = {}
-
-        def reset(self, *, seed=None, options=None):
-            self.calls += 1
-            frame = np.zeros((210, 160, 3), dtype=np.uint8)
-            return frame, {}
-
-        def step(self, action):
-            self.steps += 1
-            frame = np.zeros((210, 160, 3), dtype=np.uint8)
-            # Upstream Atari video is exposed in BGR order.
-            frame[189:193, 8:24] = [72, 72, 200]
-            return frame, 0.0, False, False, {}
-
-        def close(self) -> None:
-            pass
-
-    config = ScalarWorkerConfig(
-        provider="stable-retro",
-        game="Breakout-Atari2600-v0",
-        state="Start",
-        integration_path=None,
-        frame_skip=4,
-        frame_stack=4,
-        crop_top=0,
-        crop_bottom=0,
-        crop_mode="remove",
-        grayscale=True,
-        resize=(84, 84),
-        profile_id="breakout/start-v1",
-    )
-    env = TransientBlankEnv()
-    wrapped = ScalarPreprocessingEnv(env, config)
-    observation, _info = wrapped.reset(seed=123)
-    assert env.calls == 1
-    assert env.steps == 1
-    assert observation.shape == (4, 84, 84)
-    assert np.all(wrapped.render()[189:193, 115:131] == [72, 72, 200])
 
 
 def test_integer_area_preprocessing_matches_manual_bins_and_masks_hud() -> None:
@@ -437,7 +344,7 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
     env = StateCatalogEnv()
     adapter = Adapter(
         env,
-        get_profile("supermario/canonical-v1"),
+        get_profile("supermario/world1-v1"),
         "env-supermariobrosnes-turbo-emu",
         native_discrete=True,
     )
@@ -449,19 +356,48 @@ def test_native_initial_reset_assigns_profile_states_round_robin() -> None:
 
 def _trace_request(profile_id: str, shape: int = 3) -> dict:
     profile = get_profile(profile_id)
-    actions = benchmark_actions(profile, shape, profile.correctness_steps)
+    actions = canonical_actions(profile, shape, profile.measurement_steps)
+    return _attested_request(
+        {
+            "operation": "trace",
+            "provider": "fake",
+            "adapter": "fake",
+            "distribution": "turbobench",
+            "profile": profile.id,
+            "shape": shape,
+            "assets": {},
+            "fake_speed": 1.0,
+            "seed": 123,
+            "actions": actions.tolist(),
+            "action_stream_sha256": action_stream_hash(profile, actions),
+        }
+    )
+
+
+def _attested_request(request: dict) -> dict:
+    profile = get_profile(request["profile"])
+    spec = execution_spec(
+        provider={
+            "provider": request["provider"],
+            "adapter": request["adapter"],
+            "artifact_sha256": "fake",
+        },
+        harness={"version": "test", "source_sha256": "test"},
+        python_minor="test",
+        platform={"os": "test", "os_release": "test", "architecture": "test"},
+        profile={"id": profile.id, "sha256": "test"},
+        constructor={
+            "shape": request["shape"],
+            "frame_skip": request.get("frame_skip", profile.frame_skip),
+            "noop_reset_max": request.get("noop_reset_max", 0),
+        },
+        assets={},
+    )
+    probe = execute({**request, "operation": "contract", "execution_spec": spec})
     return {
-        "operation": "trace",
-        "provider": "fake",
-        "adapter": "fake",
-        "distribution": "turbobench",
-        "profile": profile.id,
-        "shape": shape,
-        "assets": {},
-        "fake_speed": 1.0,
-        "seed": 123,
-        "actions": actions.tolist(),
-        "action_stream_sha256": action_stream_hash(profile, actions),
+        **request,
+        "execution_spec": spec,
+        "contract_attestation": probe["contract_attestation"],
     }
 
 
@@ -485,7 +421,7 @@ def test_direct_trace_correctness_detects_every_contract_class() -> None:
 
 
 def test_exact_profile_rejects_reward_delta_inside_v1_tolerance() -> None:
-    profile = get_profile("breakout/start-v2")
+    profile = get_profile("breakout/start-v1")
     left = execute(_trace_request(profile.id, shape=1))
     right = deepcopy(left)
     right["steps"][0]["rewards"][0] += 5e-7
@@ -495,7 +431,7 @@ def test_exact_profile_rejects_reward_delta_inside_v1_tolerance() -> None:
 
 
 def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> None:
-    profile = get_profile("supermario/canonical-v1")
+    profile = get_profile("supermario/world1-v1")
     actions = promo_actions(profile)
     base = {
         "operation": "promo",
@@ -510,9 +446,110 @@ def test_fake_mario_promo_replay_completes_at_verified_step(tmp_path: Path) -> N
         "promo_actions": actions,
         "promo_action_sha256": promo_action_hash(profile, actions),
     }
-    left = execute({**base, "output_frames": str(tmp_path / "left.rgb")})
-    right = execute({**base, "provider": "fake-2", "output_frames": str(tmp_path / "right.rgb")})
+    left = execute(_attested_request({**base, "output_frames": str(tmp_path / "left.rgb")}))
+    right = execute(
+        _attested_request(
+            {**base, "provider": "fake-2", "output_frames": str(tmp_path / "right.rgb")}
+        )
+    )
     gate = compare_replays(left, right, profile)
     assert gate["passed"]
     assert gate["completion_step"] == 1_986
     assert gate["frame_count"] == 1_987
+    assert left["lifecycle"]["render_calls"] > 0
+    assert right["lifecycle"]["render_calls"] > 0
+
+
+def test_workload_environment_closes_when_execution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = get_profile("supermario/world1-v1")
+    actions = canonical_actions(profile, 1, 2)
+    request = _attested_request(
+        {
+            "operation": "benchmark",
+            "provider": "fake",
+            "adapter": "fake",
+            "distribution": "turbobench",
+            "profile": profile.id,
+            "shape": 1,
+            "assets": {},
+            "fake_speed": 1.0,
+            "seed": 123,
+            "actions": actions.tolist(),
+            "action_stream_sha256": action_stream_hash(profile, actions),
+        }
+    )
+    closed: list[str] = []
+    original_close = FakeAdapter.close
+
+    def fail_step(self, action):
+        raise RuntimeError("injected step failure")
+
+    def record_close(self):
+        original_close(self)
+        closed.append(self.instance_id)
+
+    monkeypatch.setattr(FakeAdapter, "step", fail_step)
+    monkeypatch.setattr(FakeAdapter, "close", record_close)
+
+    with pytest.raises(RuntimeError, match="injected step failure"):
+        execute(request)
+    assert len(closed) == 1
+
+
+def test_policy_repetitions_reset_identically_outside_timing(monkeypatch):
+    import turbobench.runner as runner
+
+    events = []
+    timed = False
+
+    class CaptureAdapter:
+        num_envs = 2
+        closed = False
+
+        def __init__(self):
+            self.contract_report = {}
+
+        def initial_reset(self, seed):
+            assert not timed
+            events.append(("reset", seed))
+
+        def benchmark_action(self, action):
+            assert not timed
+            return action
+
+        def step(self, action):
+            events.append(("step", timed, action.tolist()))
+            return None, None, np.zeros(2, dtype=bool), np.zeros(2, dtype=bool), {}
+
+        def close(self):
+            self.closed = True
+
+    adapter = CaptureAdapter()
+    monkeypatch.setattr(runner, "_create_workload_adapter", lambda *args: adapter)
+    monkeypatch.setattr(runner, "_workload_lifecycle", lambda *args: {})
+
+    def clock():
+        nonlocal timed
+        timed = not timed
+        return 0 if timed else 1_000_000
+
+    monkeypatch.setattr(runner.time, "perf_counter_ns", clock)
+    result = runner.run_benchmark(
+        {
+            "actions": [[1, 1], [2, 2]],
+            "seed": 1000000,
+            "replicate_initial_seed": True,
+            "warmup_steps": 1,
+            "provider": "fixture",
+            "action_stream_sha256": "locked",
+        },
+        get_profile("breakout/start-v1"),
+    )
+    assert [event for event in events if event[0] == "reset"] == [("reset", 1000000)] * 4
+    assert [event[1] for event in events if event[0] == "step"] == [False] + [True] * 6
+    assert result["steps"] == 2
+    assert "policy_inference" in result["timed_excludes"]
+    assert "trajectory_recording" in result["timed_excludes"]
+    assert adapter.closed

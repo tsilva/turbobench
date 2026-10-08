@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "turbobench.comparison-request/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "request_id",
+    "profile",
+    "left",
+    "right",
+    "python_minor",
+    "smoke",
+    "policy_id",
+    "actions",
+    "policy_contract",
+    "render_machine",
+    "harness_sha256"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "turbobench.comparison-request/v1"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "left": {
+      "type": "string"
+    },
+    "right": {
+      "type": "string"
+    },
+    "python_minor": {
+      "type": "string"
+    },
+    "smoke": {
+      "type": "boolean"
+    },
+    "policy_id": {
+      "type": "string"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "policy_contract": {
+      "type": "object"
+    },
+    "render_machine": {
+      "type": "object"
+    },
+    "harness_sha256": {
+      "type": "string"
+    }
+  }
+}

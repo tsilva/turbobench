@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "turbobench.policy-proof/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "proof_id",
+    "bindings",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "turbobench.policy-proof/v1"
+    },
+    "proof_id": {
+      "type": "string"
+    },
+    "bindings": {
+      "type": "object",
+      "required": [
+        "profile",
+        "contract"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string"
+        },
+        "contract": {
+          "type": "object"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

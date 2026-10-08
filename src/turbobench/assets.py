@@ -13,25 +13,16 @@ from turbobench.util import sha256_file
 
 BREAKOUT_ROM_SHA256 = "376323f051c3c373c887fd83abead39d87d844ff283d435f4addbfc1710c6fd5"
 STATE_SHA256: dict[str, dict[str, str]] = {
-    "supermario/canonical-v1": {
+    "supermario/world1-v1": {
         "Level1-1": "905a2e5d8a1bcc8b5955d132a77a8244025d205c2c6a9b07404758d3b84174b5",
         "Level1-2": "68d94ad097de8920a4ec5035be30cb6ec38b0bcdf48fcf65360c07b8e337900a",
         "Level1-3": "f83f72d6e46d8ebe580bde2ce473faa1aa736640c9e99b4358867ace6c5d64bb",
         "Level1-4": "d763572ad5ea3382b7ad901b3f4bfe991fc641cf5251f8223c32f532896ed8b6",
     },
     "breakout/start-v1": {
-        "Start": "84622481671574e45f3da84678ab8ba79756cbcc656158015e0d69dad9fad590",
-    },
-    "supermario/canonical-v2": {
-        "Level1-1": "905a2e5d8a1bcc8b5955d132a77a8244025d205c2c6a9b07404758d3b84174b5",
-        "Level1-2": "68d94ad097de8920a4ec5035be30cb6ec38b0bcdf48fcf65360c07b8e337900a",
-        "Level1-3": "f83f72d6e46d8ebe580bde2ce473faa1aa736640c9e99b4358867ace6c5d64bb",
-        "Level1-4": "d763572ad5ea3382b7ad901b3f4bfe991fc641cf5251f8223c32f532896ed8b6",
-    },
-    "breakout/start-v2": {
         "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
     },
-    "breakout/start-v3": {
+    "breakout/firstwall-policy-v1": {
         "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79",
     },
 }
@@ -39,9 +30,18 @@ STATE_SHA256: dict[str, dict[str, str]] = {
 
 def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return private runner paths and a separate path-free portable record."""
+    declaration = (profile.resolved_workload or {}).get("definition", {}).get("assets")
+    if declaration is not None and not declaration["required"]:
+        return {}, {"required": False, "available": True, "assets": []}
     if profile.logical_environment == "vizdoom-basic":
         return {}, {"required": False, "assets": []}
-    expected = MARIO_ROM_SHA256 if profile.logical_environment == "supermario" else BREAKOUT_ROM_SHA256
+    expected = (
+        declaration["game_payload_sha256"]
+        if declaration is not None
+        else MARIO_ROM_SHA256
+        if profile.logical_environment == "supermario"
+        else BREAKOUT_ROM_SHA256
+    )
     game_dirs = _find_game_dirs(profile)
     if not game_dirs:
         return {}, {
@@ -51,7 +51,12 @@ def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
             "detail": f"canonical {profile.game} payload was not found",
         }
     roms = sorted(
-        {path.resolve() for game_dir in game_dirs for path in game_dir.glob("rom.*") if path.is_file()}
+        {
+            path.resolve()
+            for game_dir in game_dirs
+            for path in game_dir.glob("rom.*")
+            if path.is_file()
+        }
     )
     matching = next((path for path in roms if sha256_file(path) == expected), None)
     if matching is None:
@@ -67,7 +72,13 @@ def discover_assets(profile: Profile) -> tuple[dict[str, Any], dict[str, Any]]:
     state_records: list[dict[str, str]] = []
     missing_states: list[str] = []
     for state in profile.states:
-        expected_state = STATE_SHA256.get(profile.id, {}).get(state)
+        expected_state = (
+            declaration["states"].get(state)
+            if declaration is not None
+            else STATE_SHA256.get(profile.id, {}).get(state)
+        )
+        if declaration is not None and expected_state is None:
+            raise ValueError("comparison definition has no canonical digest for the policy state")
         candidates = [
             game_dir / f"{state}.state"
             for game_dir in game_dirs
@@ -145,6 +156,7 @@ def _find_game_dirs(profile: Profile) -> list[Path]:
             roots.append(Path(value).expanduser())
     roots.extend(
         (
+            Path.home() / ".local" / "share" / "turbobench" / "assets",
             Path.home() / "roms" / "stable_retro" / "data" / "stable",
             Path.home() / "roms" / "stable-retro" / "data" / "stable",
             Path(__file__).resolve().parents[3]

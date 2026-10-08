@@ -1,0 +1,60 @@
+schema = "turbobench.workload-profile/v2"
+id = "vizdoom/basic-v1"
+logical_environment = "vizdoom-basic"
+game = "VizdoomBasic-v1"
+providers = ["env-vizdoom-turbo", "vizdoom"]
+states = ["default"]
+semantic_actions = ["noop", "left", "right"]
+info_integer = ["killcount", "health", "ammo2", "episode_time"]
+info_float = []
+
+[action_table]
+noop = []
+left = ["MOVE_LEFT"]
+right = ["MOVE_RIGHT"]
+attack = ["ATTACK"]
+left_attack = ["MOVE_LEFT", "ATTACK"]
+right_attack = ["MOVE_RIGHT", "ATTACK"]
+
+[observation]
+frame_skip = 4
+frame_stack = 4
+crop_top = 0
+crop_bottom = 0
+crop_mode = "remove"
+resize = [84, 84]
+grayscale = true
+layout = "chw"
+resize_algorithm = "area"
+maxpool_last_two = false
+
+[run]
+action_stream_version = "seeded-random-with-directed-prefix/v1"
+seed = 123
+measurement_shapes = [1, 16, 32]
+quick_parity_steps = 32
+full_parity_steps = 4096
+measurement_steps = 256
+warmup_pairs = 1
+light_pairs = 2
+full_pairs = 7
+
+[parity]
+authority = "vizdoom"
+authority_version = "1.3.0"
+candidates = ["env-vizdoom-turbo"]
+checks = ["action-identity", "transition-exact", "reset-exact", "snapshot-continuation", "required-info"]
+shapes = [1, 4]
+quick_shapes = [1]
+snapshot_prefix_steps = 128
+snapshot_suffix_steps = 128
+reset_samples = 256
+
+[promo]
+kind = "vizdoom-basic-deterministic-v1"
+steps = 2100
+completion_json = '{"key":"killcount","kind":"terminal-or-info-at-least","value":1}'
+
+[exact]
+native_transition_exact = true
+allowed_representation_conversion = "identity"

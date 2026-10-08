@@ -186,21 +186,33 @@ def validate_constructor(environment_type: type[Any], provider: str) -> dict[str
     )
 
 
-def legacy_report(provider: str, api_version: int | None) -> dict[str, Any]:
+def outside_turbo_contract_report(provider: str) -> dict[str, Any]:
+    reason = "provider does not declare the Turbo Vector API and is outside this contract"
+    return _report(
+        provider=provider,
+        api_version=None,
+        applicable=False,
+        promotable=True,
+        checks=[{"name": "API declaration", "passed": True, "detail": reason}],
+        errors=[],
+        phase="declaration",
+    )
+
+
+def unsupported_api_report(provider: str, api_version: int | None) -> dict[str, Any]:
     reason = (
-        "historical Turbo Vector API v1 is runnable only as a diagnostic workload"
-        if api_version == 1
-        else "provider does not declare the Turbo Vector API and is outside this contract"
+        "Turbo Vector API declaration is required; provider must declare v2"
+        if api_version is None
+        else f"Turbo Vector API v{api_version} is unsupported; provider must declare v2"
     )
     return _report(
         provider=provider,
         api_version=api_version,
-        applicable=api_version == 1,
-        promotable=api_version is None,
-        checks=[{"name": "API declaration", "passed": api_version is None, "detail": reason}],
-        errors=[] if api_version is None else [reason],
+        applicable=True,
+        promotable=False,
+        checks=[{"name": "API declaration", "passed": False, "detail": reason}],
+        errors=[reason],
         phase="declaration",
-        passed=True,
     )
 
 
@@ -362,18 +374,23 @@ def validate_environment(environment_type: type[Any], env: Any, provider: str) -
 
     catalog = getattr(env, "state_catalog", None)
     if isinstance(capabilities, Mapping) and capabilities.get("supports_state_catalog"):
+        try:
+            catalog_count: int | str = len(catalog)
+        except TypeError:
+            catalog_count = "unknown"
+        catalog_detail = f"type={type(catalog).__name__}, count={catalog_count}"
         _check(
             checks,
             errors,
             "immutable non-empty state catalog",
             isinstance(catalog, tuple) and bool(catalog),
-            repr(catalog),
+            catalog_detail,
         )
         try:
             unique = len(set(catalog)) == len(catalog)
         except TypeError:
             unique = False
-        _check(checks, errors, "unique state catalog", unique, repr(catalog))
+        _check(checks, errors, "unique state catalog", unique, catalog_detail)
 
     runtime = _validate_transitions(env, transport, capabilities, schema)
     checks.extend(runtime[0])
@@ -815,7 +832,8 @@ __all__ = [
     "TURBO_API_VERSION",
     "TurboContractError",
     "declared_api_version",
-    "legacy_report",
+    "outside_turbo_contract_report",
+    "unsupported_api_report",
     "validate_constructor",
     "validate_environment",
 ]

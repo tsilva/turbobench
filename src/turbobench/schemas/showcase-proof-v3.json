@@ -1,0 +1,92 @@
+{
+  "$id": "turbobench.showcase-proof/v3",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "bindings": {
+      "additionalProperties": false,
+      "properties": {
+        "assets": {
+          "type": "object"
+        },
+        "benchmark_id": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "smoke",
+            "full"
+          ],
+          "type": "string"
+        },
+        "pipeline_passed": {
+          "type": "boolean"
+        },
+        "policy_id": {
+          "type": "string"
+        },
+        "render_harness_sha256": {
+          "type": "string"
+        },
+        "render_machine": {
+          "type": "object"
+        },
+        "style": {
+          "type": "string"
+        },
+        "workload_sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "benchmark_id",
+        "policy_id",
+        "render_machine",
+        "render_harness_sha256",
+        "mode",
+        "style",
+        "assets",
+        "pipeline_passed",
+        "workload_sha256"
+      ],
+      "type": "object"
+    },
+    "proof_id": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "turbobench.showcase-proof/v3",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "proof_id",
+    "bindings",
+    "artifacts"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,64 @@
+{
+  "$id": "turbobench.policy-benchmark-proof/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_id": {
+          "type": "string"
+        },
+        "policy_id": {
+          "type": "string"
+        },
+        "style": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "benchmark_id",
+        "policy_id",
+        "style"
+      ]
+    },
+    "proof_id": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "turbobench.policy-benchmark-proof/v1",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "proof_id",
+    "bindings",
+    "artifacts"
+  ],
+  "type": "object"
+}

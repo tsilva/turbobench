@@ -9,15 +9,15 @@ and selective resets.
 from __future__ import annotations
 
 import argparse
-import bisect
 import hashlib
 import importlib
 import importlib.metadata
-import inspect
 import os
+import platform
 import shutil
 import tempfile
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache, partial
@@ -27,6 +27,12 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from turbobench.lifecycle import (
+    attest,
+    evidence_binding,
+    require_attestation,
+    require_request_matches_spec,
+)
 from turbobench.model import Profile
 from turbobench.profiles import (
     BREAKOUT_RGB_TRANSPORT_CONVERSION,
@@ -36,7 +42,8 @@ from turbobench.profiles import (
 from turbobench.turbo_api import (
     TurboContractError,
     declared_api_version,
-    legacy_report,
+    outside_turbo_contract_report,
+    unsupported_api_report,
     validate_constructor,
     validate_environment,
 )
@@ -63,194 +70,7 @@ class ScalarWorkerConfig:
     rom_path: str | None = None
     state_paths: tuple[tuple[str, str], ...] = ()
     noop_reset_max: int = 0
-
-
-_PADDLE_MEASURE_LOWER_BOUNDS = (
-    1,
-    272,
-    295,
-    318,
-    341,
-    366,
-    388,
-    411,
-    447,
-    470,
-    493,
-    516,
-    539,
-    563,
-    586,
-    609,
-    633,
-    657,
-    680,
-    703,
-    733,
-    757,
-    780,
-    803,
-    828,
-    851,
-    874,
-    897,
-    920,
-    943,
-    966,
-    991,
-    1013,
-    1036,
-    1060,
-    1083,
-    1107,
-    1130,
-    1157,
-    1180,
-    1203,
-    1228,
-    1251,
-    1274,
-    1297,
-    1320,
-    1343,
-    1366,
-    1391,
-    1413,
-    1436,
-    1460,
-    1483,
-    1507,
-    1530,
-    1553,
-    1576,
-    1599,
-    1624,
-    1647,
-    1670,
-    1693,
-    1716,
-    1739,
-    1762,
-    1786,
-    1809,
-    1832,
-    1857,
-    1880,
-    1903,
-    1926,
-    1949,
-    1972,
-    1995,
-    2020,
-    2039,
-    2066,
-    2088,
-    2112,
-    2135,
-    2158,
-    2182,
-    2205,
-    2228,
-    2253,
-    2276,
-    2299,
-    2322,
-)
-
-
-def _needs_legacy_breakout_paddle_normalization(config: ScalarWorkerConfig) -> bool:
-    """Retain the historical v1 workload without changing current comparisons."""
-
-    return (
-        config.provider == "stable-retro"
-        and config.game.startswith("Breakout-Atari2600")
-        and config.profile_id == "breakout/start-v1"
-        and not config.native_transition_exact
-    )
-
-
-class BreakoutPaddleNormalizer:
-    """Canonical corrected-Stella paddle state for upstream 1.0.1 frames."""
-
-    def __init__(self) -> None:
-        self.reset()
-
-    def reset(self) -> None:
-        self.x = 115
-        self.charge = 2048
-        self.repeat = 0
-        self.held = False
-        self.measurement = 162
-
-    def step(self, action: Any) -> None:
-        buttons = np.asarray(action)
-        direction = 2 if bool(buttons[7]) else 3 if bool(buttons[6]) else 0
-        raw_x = self.x + 47
-        target = 235 - self.measurement
-        self.x = min(191, max(55, (raw_x + target) // 2)) - 47
-        if self.held:
-            self.repeat += 1
-            if self.repeat > 5:
-                self.repeat = 25
-        if direction == 2 and self.charge > self.repeat:
-            self.charge -= self.repeat
-        elif direction == 3 and self.charge + self.repeat < 3856:
-            self.charge += self.repeat
-        self.held = direction in {2, 3}
-        index = max(0, bisect.bisect_right(_PADDLE_MEASURE_LOWER_BOUNDS, self.charge) - 1)
-        self.measurement = 0 if index == 0 else 12 + 2 * (index - 1)
-
-    def normalize_frame(self, frame: np.ndarray) -> np.ndarray:
-        if frame.shape[:2] != (210, 160):
-            raise ValueError(f"canonical Breakout frame must be 210x160, got {frame.shape}")
-        candidates: list[tuple[int, int]] = []
-        red = np.asarray([200, 72, 72], dtype=np.uint8)
-        runs: list[tuple[int, int]] = []
-        for candidate_red in (
-            red,
-            np.asarray([72, 72, 200], dtype=np.uint8),
-            np.asarray([72, 72, 205], dtype=np.uint8),
-        ):
-            mask = np.all(frame[190] == candidate_red, axis=1)
-            runs = []
-            start: int | None = None
-            for offset, enabled in enumerate((*mask.tolist(), False)):
-                if enabled and start is None:
-                    start = offset
-                elif not enabled and start is not None:
-                    runs.append((start, offset - start))
-                    start = None
-            candidates = [run for run in runs if run[1] in {12, 16}]
-            if candidates:
-                red = candidate_red
-                break
-        if not candidates:
-            colors, counts = np.unique(frame[190], axis=0, return_counts=True)
-            dominant = sorted(
-                (
-                    (int(count), tuple(int(channel) for channel in color))
-                    for color, count in zip(colors, counts, strict=True)
-                ),
-                reverse=True,
-            )[:8]
-            red_rows = [
-                (row, int(count))
-                for row, count in enumerate(np.all(frame == red, axis=2).sum(axis=1))
-                if count
-            ]
-            raise RuntimeError(
-                "could not locate canonical Breakout paddle raster; "
-                f"red_runs={runs!r}; dominant_row_colors={dominant!r}; "
-                f"red_rows={red_rows!r}"
-            )
-        old_x, width = max(candidates, key=lambda run: run[1])
-        new_x = min(144, max(8, self.x))
-        if old_x == new_x:
-            return frame
-        value = frame.copy()
-        value[189:193, old_x : old_x + width] = 0
-        value[189:193, new_x : new_x + width] = red
-        return value
+    representation_conversion: str = ""
 
 
 class ScalarPreprocessingEnv:
@@ -281,11 +101,6 @@ class ScalarPreprocessingEnv:
         self.action_space = env.action_space
         self.metadata = dict(getattr(env, "metadata", {}))
         self.render_mode = "rgb_array"
-        self._paddle_normalizer = (
-            BreakoutPaddleNormalizer()
-            if _needs_legacy_breakout_paddle_normalization(config)
-            else None
-        )
 
     @property
     def unwrapped(self) -> Any:
@@ -300,31 +115,9 @@ class ScalarPreprocessingEnv:
         if not self._restoring_snapshot:
             self._parity_action_history.clear()
             self._parity_reset_seed = seed
-        if self._paddle_normalizer is not None:
-            self._paddle_normalizer.reset()
         observation, info = self.env.reset(seed=seed, options=options)
         raw = _screen(observation)
         self._raw_frame = _normalize_scalar_rgb(raw, self.config)
-        if self._paddle_normalizer is not None:
-            try:
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
-            except RuntimeError:
-                if np.any(self._raw_frame):
-                    raise
-                # Upstream Stable Retro's Atari reset returns the blank TIA
-                # frame immediately before the canonical post-restore frame.
-                # Advance that neutral frame inside reset; selective resets
-                # remain timed by the benchmark contract.
-                neutral = np.zeros(self.action_space.shape, dtype=np.int8)
-                observation, _reward, terminated, truncated, step_info = self.env.step(neutral)
-                if terminated or truncated:
-                    raise RuntimeError(
-                        "upstream Breakout terminated during reset bootstrap"
-                    ) from None
-                if step_info:
-                    info = step_info
-                self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         noop_count = 0
         if self.config.noop_reset_max:
             if seed is None:
@@ -342,8 +135,6 @@ class ScalarPreprocessingEnv:
                 if step_info:
                     info = step_info
             self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-            if self._paddle_normalizer is not None:
-                self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         if not info:
             data = getattr(self.env.unwrapped, "data", None)
             if data is not None and hasattr(data, "lookup_all"):
@@ -367,8 +158,6 @@ class ScalarPreprocessingEnv:
         info: dict[str, Any] = {}
         observation: Any = None
         for _ in range(self.config.frame_skip):
-            if self._paddle_normalizer is not None:
-                self._paddle_normalizer.step(action)
             observation, reward, terminated, truncated, info = self.env.step(action)
             total_reward += float(reward)
             if terminated or truncated:
@@ -388,8 +177,6 @@ class ScalarPreprocessingEnv:
             self._stack[-self._channels :] = last_frame
             return self._stack.copy(), total_reward, terminated, truncated, info
         self._raw_frame = _normalize_scalar_rgb(_screen(observation), self.config)
-        if self._paddle_normalizer is not None:
-            self._raw_frame = self._paddle_normalizer.normalize_frame(self._raw_frame)
         frame = preprocess_frame(self._raw_frame, self.config)
         if self._stack.shape[0] > self._channels:
             self._stack[: -self._channels] = self._stack[self._channels :]
@@ -435,13 +222,9 @@ class ScalarPreprocessingEnv:
 
     def restore_parity_snapshots(
         self,
-        snapshots: Sequence[
-            tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]
-        ],
+        snapshots: Sequence[tuple[int | None, tuple[np.ndarray, ...], np.ndarray, np.ndarray]],
     ) -> bool:
-        reset_seed, history, expected_stack, expected_raw = snapshots[
-            self.config.worker_index
-        ]
+        reset_seed, history, expected_stack, expected_raw = snapshots[self.config.worker_index]
         self._restoring_snapshot = True
         try:
             self.reset(seed=reset_seed)
@@ -569,13 +352,17 @@ class Adapter:
         *,
         native_discrete: bool,
         contract_report: dict[str, Any] | None = None,
+        attestation_sha256: str | None = None,
         overlay: tempfile.TemporaryDirectory[str] | None = None,
     ) -> None:
         self.env = env
         self.profile = profile
         self.provider = provider
         self.native_discrete = native_discrete
-        self.contract_report = contract_report or legacy_report(provider, None)
+        self.contract_report = contract_report or outside_turbo_contract_report(provider)
+        self.attestation_sha256 = attestation_sha256
+        self.instance_id = uuid.uuid4().hex
+        self.closed = False
         self.overlay = overlay
         self.num_envs = int(env.num_envs)
         self._terminal_mask = np.zeros(self.num_envs, dtype=np.bool_)
@@ -615,18 +402,15 @@ class Adapter:
         self._reset_generations.fill(0)
         self._terminal_mask.fill(False)
         self._render_cache = None
-        return self.env.reset(seed=seed, options=options)
+        replicated = self.profile.action_stream_version == "captured-policy/v1"
+        return self.env.reset(seed=[seed] * self.num_envs if replicated else seed, options=options)
 
     def selective_reset(self, mask: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
         if self._initial_seed is None:
             raise RuntimeError("selective reset requested before the initial seeded reset")
         self._reset_generations[mask] += 1
         seeds = [
-            (
-                self._initial_seed
-                + int(self._reset_generations[lane]) * self.num_envs
-                + lane
-            )
+            (self._initial_seed + int(self._reset_generations[lane]) * self.num_envs + lane)
             % (2**32)
             if mask[lane]
             else None
@@ -792,17 +576,12 @@ class Adapter:
                 else "identity"
             ),
             "compatibility_normalization": (
-                "upstream-stella-reset-and-paddle-v1"
-                if self.provider == "stable-retro"
-                and self.profile.id == "breakout/start-v1"
-                else "vizdoom-last-valid-terminal-frame-v1"
+                "vizdoom-last-valid-terminal-frame-v1"
                 if self.profile.logical_environment == "vizdoom-basic"
                 else "identity"
             ),
             "native_transition_exact": self.profile.native_transition_exact,
-            "allowed_representation_conversion": allowed_representation_conversion(
-                self.profile
-            ),
+            "allowed_representation_conversion": allowed_representation_conversion(self.profile),
             "ram": {
                 "representation": (
                     "nes-cpu-ram-0x0000-0x07ff"
@@ -829,6 +608,7 @@ class Adapter:
         try:
             self.env.close()
         finally:
+            self.closed = True
             if self.overlay is not None:
                 self.overlay.cleanup()
 
@@ -840,6 +620,10 @@ class _InMemorySpace:
 
     def sample(self) -> np.ndarray:
         return np.zeros(self.shape, dtype=self.dtype)
+
+
+_FAKE_PROCESS_POISONED = False
+_WORKLOAD_OPERATIONS = frozenset({"trace", "benchmark", "reset-distribution", "promo"})
 
 
 class _InMemoryFakeV2Env:
@@ -888,6 +672,7 @@ class _InMemoryFakeV2Env:
         info_frame_stack_keys=None,
         state_catalog=None,
     ) -> None:
+        poison_enabled = game == "Poison-v0"
         del (
             game,
             scenario,
@@ -935,6 +720,8 @@ class _InMemoryFakeV2Env:
         if render_mode not in (None, "rgb_array"):
             raise ValueError("render_mode must be None or 'rgb_array'")
         self.num_envs = int(num_envs)
+        self.poison_enabled = poison_enabled
+        self.instance_poisoned = False
         self.transport = transport
         self.render_mode = render_mode
         self.state_catalog = catalog
@@ -1012,6 +799,10 @@ class _InMemoryFakeV2Env:
         return self._states
 
     def render_lane(self, lane):
+        global _FAKE_PROCESS_POISONED
+        if self.poison_enabled:
+            self.instance_poisoned = True
+            _FAKE_PROCESS_POISONED = True
         if self.render_mode != "rgb_array":
             return None
         return np.full((8, 8, 3), lane, dtype=np.uint8)
@@ -1027,7 +818,16 @@ class _InMemoryFakeV2Env:
 
 
 class FakeAdapter:
-    def __init__(self, profile: Profile, provider: str, shape: int, speed: float) -> None:
+    def __init__(
+        self,
+        profile: Profile,
+        provider: str,
+        shape: int,
+        speed: float,
+        *,
+        contract_report: dict[str, Any] | None = None,
+        attestation_sha256: str | None = None,
+    ) -> None:
         self.profile = profile
         self.provider = provider
         self.num_envs = shape
@@ -1035,18 +835,13 @@ class FakeAdapter:
         self.step_index = 0
         self._state = np.arange(shape, dtype=np.int64)
         self.in_promo = False
-        contract_env = _InMemoryFakeV2Env(
-            "Fake-v0",
-            num_envs=shape,
-            obs_copy="copy",
-            render_mode="rgb_array",
-        )
-        try:
-            self.contract_report = validate_environment(_InMemoryFakeV2Env, contract_env, provider)
-        finally:
-            contract_env.close()
-        if not self.contract_report["passed"]:
-            raise TurboContractError(self.contract_report)
+        self.contract_report = contract_report or outside_turbo_contract_report(provider)
+        self.attestation_sha256 = attestation_sha256
+        self.instance_id = uuid.uuid4().hex
+        self.closed = False
+        self.process_poisoned_at_construction = _FAKE_PROCESS_POISONED
+        self.instance_poisoned = False
+        self.render_calls = 0
 
     def initial_reset(self, seed: int):
         self.step_index = 0
@@ -1097,6 +892,9 @@ class FakeAdapter:
         return obs
 
     def render_frames(self) -> list[np.ndarray]:
+        self.render_calls += 1
+        if "poison" in self.provider:
+            self.instance_poisoned = True
         frames = []
         for lane in range(self.num_envs):
             value = int(self._state[lane])
@@ -1141,7 +939,7 @@ class FakeAdapter:
         }
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 def integer_area_resize(image: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -1310,10 +1108,10 @@ def _canonical_raw_rgb(frame: Any, profile: Profile) -> np.ndarray:
 
 def _comparison_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray:
     value = frame
-    if (
-        profile.logical_environment == "breakout"
-        and provider in {"stable-retro", "env-stableretro-turbo"}
-    ):
+    if profile.logical_environment == "breakout" and provider in {
+        "stable-retro",
+        "env-stableretro-turbo",
+    }:
         value = _canonical_stella_rgb(value)
     return _canonical_raw_rgb(value, profile)
 
@@ -1341,10 +1139,61 @@ def _semantic_raw_rgb(frame: Any, profile: Profile, provider: str) -> np.ndarray
 def _normalize_scalar_rgb(frame: Any, config: ScalarWorkerConfig) -> np.ndarray:
     value = normalize_rgb(frame)
     if config.provider == "stable-retro" and config.game.startswith("Breakout-Atari2600"):
+        if (
+            config.profile_id
+            and (
+                config.representation_conversion
+                or get_profile(config.profile_id).allowed_representation_conversion
+            )
+            == "stable-retro-platform-rgb565-to-training-bgr-and-canonical-stella-rgb/v1"
+            and platform.system() == "Linux"
+        ):
+            return _linux_stella_training_transport(value)
         # Stable Retro derives policy observations from these raw bytes.
         # Human rendering normalizes the separate comparison boundary.
         return value
     return value
+
+
+def _linux_stella_training_transport(frame: Any) -> np.ndarray:
+    """Losslessly map Linux RGB565 palette IDs to the saved macOS BGR transport.
+
+    This conversion is explicitly selected by the new policy-compatible profile.
+    It is a bijection on the nine Breakout palette IDs, not a visual tolerance.
+    Reject any unrecognized palette ID instead of approximating its pixels.
+    """
+    source = np.bitwise_and(normalize_rgb(frame), np.asarray([0xF8, 0xFC, 0xF8], dtype=np.uint8))
+    source_palette = [
+        (0, 0, 0),
+        (136, 140, 136),
+        (200, 72, 72),
+        (192, 108, 56),
+        (176, 120, 48),
+        (160, 160, 40),
+        (72, 160, 72),
+        (64, 72, 200),
+        (64, 156, 128),
+    ]
+    training_palette = [
+        (0, 0, 0),
+        (142, 142, 142),
+        (72, 72, 200),
+        (58, 108, 198),
+        (48, 122, 180),
+        (42, 162, 162),
+        (72, 160, 72),
+        (200, 72, 66),
+        (130, 158, 66),
+    ]
+    result = np.empty_like(source)
+    seen = np.zeros(source.shape[:2], dtype=np.bool_)
+    for original, trained in zip(source_palette, training_palette, strict=True):
+        mask = np.all(source == original, axis=-1)
+        result[mask] = trained
+        seen |= mask
+    if not np.all(seen):
+        raise ValueError("Linux Stable Retro frame contains an undeclared Breakout palette ID")
+    return np.ascontiguousarray(result)
 
 
 def _canonical_stella_rgb(frame: Any) -> np.ndarray:
@@ -1386,53 +1235,82 @@ def _button_masks(
     return masks
 
 
-def _create_adapter(request: dict[str, Any], profile: Profile) -> Adapter | FakeAdapter:
+def _turbo_construction(
+    request: dict[str, Any], profile: Profile, frame_skip: int
+) -> tuple[type[Any], str, dict[str, Any], tempfile.TemporaryDirectory[str] | None]:
     provider = str(request["provider"])
     shape = int(request["shape"])
-    frame_skip = int(request.get("frame_skip", profile.frame_skip))
     assets = request.get("assets", {})
-    if request.get("adapter") == "fake":
-        return FakeAdapter(profile, provider, shape, float(request.get("fake_speed", 1.0)))
     noop_reset_max = int(request.get("noop_reset_max", 0))
     common = _turbo_v2_options(profile, shape, frame_skip, noop_reset_max=noop_reset_max)
     rom_path = assets.get("rom_path")
-    if request.get("adapter") == "turbo-vector-v2":
-        module = importlib.import_module(str(request["import_name"]))
-        overlay: tempfile.TemporaryDirectory[str] | None = None
-        if provider in {"env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"}:
-            common["rom_path"] = rom_path
-        if provider == "env-stableretro-turbo" and profile.native_transition_exact:
-            common["state_catalog"] = [
-                assets.get("state_paths", {}).get(state, state) for state in profile.states
-            ]
-        if provider == "env-stableretro-turbo":
-            if profile.native_transition_exact and profile.logical_environment == "breakout":
-                overlay, common["info"] = _augmented_breakout_info(module, profile)
-            else:
-                common["info"] = (
-                    None if profile.native_transition_exact else assets.get("info_schema_path")
-                )
-            common["scenario"] = (
-                None if profile.native_transition_exact else assets.get("scenario_path")
+    module = importlib.import_module(str(request["import_name"]))
+    overlay: tempfile.TemporaryDirectory[str] | None = None
+    if provider in {"env-supermariobrosnes-turbo-emu", "env-stableretro-turbo"}:
+        common["rom_path"] = rom_path
+    if provider == "env-stableretro-turbo" and profile.native_transition_exact:
+        common["state_catalog"] = [
+            assets.get("state_paths", {}).get(state, state) for state in profile.states
+        ]
+    if provider == "env-stableretro-turbo":
+        if profile.native_transition_exact and profile.logical_environment == "breakout":
+            overlay, common["info"] = _augmented_breakout_info(module, profile)
+        else:
+            common["info"] = (
+                None if profile.native_transition_exact else assets.get("info_schema_path")
             )
-        if provider == "env-vizdoom-turbo":
-            common["game_variables"] = [
-                key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
-            ]
-        environment_type = getattr(module, str(request["environment_class"]))
-        env, report = _construct_turbo_environment(
-            environment_type, provider, profile.game, common
+        common["scenario"] = (
+            None if profile.native_transition_exact else assets.get("scenario_path")
         )
+    if provider == "env-vizdoom-turbo":
+        common["game_variables"] = [
+            key.upper() for key in profile.info_integer if key.casefold() != "episode_time"
+        ]
+    environment_type = getattr(module, str(request["environment_class"]))
+    return environment_type, profile.game, common, overlay
+
+
+def _create_workload_adapter(request: dict[str, Any], profile: Profile) -> Adapter | FakeAdapter:
+    """Construct a fresh workload environment after fail-closed attestation checks."""
+
+    attestation = request.get("contract_attestation")
+    require_request_matches_spec(request, request.get("execution_spec", {}))
+    attestation_sha256 = require_attestation(request.get("execution_spec", {}), attestation)
+    contract_report = dict(attestation["contract_report"])
+    provider = str(request["provider"])
+    shape = int(request["shape"])
+    frame_skip = int(request.get("frame_skip", profile.frame_skip))
+    if request.get("adapter") == "fake":
+        return FakeAdapter(
+            profile,
+            provider,
+            shape,
+            float(request.get("fake_speed", 1.0)),
+            contract_report=contract_report,
+            attestation_sha256=attestation_sha256,
+        )
+    if request.get("adapter") == "turbo-vector-v2":
+        environment_type, game, options, overlay = _turbo_construction(request, profile, frame_skip)
+        try:
+            env = _construct_turbo_workload_environment(environment_type, provider, game, options)
+        except BaseException:
+            if overlay is not None:
+                overlay.cleanup()
+            raise
         return Adapter(
             env,
             profile,
             provider,
             native_discrete=True,
-            contract_report=report,
+            contract_report=contract_report,
+            attestation_sha256=attestation_sha256,
             overlay=overlay,
         )
     if provider in {"stable-retro", "vizdoom"}:
-        return _create_scalar_adapter(request, profile, frame_skip)
+        adapter = _create_scalar_adapter(request, profile, frame_skip)
+        adapter.contract_report = contract_report
+        adapter.attestation_sha256 = attestation_sha256
+        return adapter
     raise ValueError(f"no built-in adapter for {provider!r}")
 
 
@@ -1479,13 +1357,7 @@ def _turbo_v2_options(
 def _augmented_breakout_info(
     module: Any, profile: Profile
 ) -> tuple[tempfile.TemporaryDirectory[str], str]:
-    source = (
-        Path(module.__file__).resolve().parent
-        / "data"
-        / "stable"
-        / profile.game
-        / "data.json"
-    )
+    source = Path(module.__file__).resolve().parent / "data" / "stable" / profile.game / "data.json"
     if not source.is_file():
         raise FileNotFoundError(f"Stable Retro Turbo data schema is missing: {source.name}")
     temporary = tempfile.TemporaryDirectory(prefix="turbobench-breakout-info-")
@@ -1496,34 +1368,92 @@ def _augmented_breakout_info(
     return temporary, str(target)
 
 
-def _construct_turbo_environment(
+def _construct_turbo_workload_environment(
     environment_type: type[Any],
     provider: str,
     game: str,
     options: Mapping[str, Any],
-) -> tuple[Any, dict[str, Any]]:
-    """Detect the declaration before construction and enforce v2 before use."""
+) -> Any:
+    """Construct only; dynamic validation belongs exclusively to probe processes."""
 
     api_version = declared_api_version(environment_type)
     kwargs = dict(options)
     kwargs.pop("state", None)  # state_catalog is the sole benchmark start selector
-    if api_version == 2:
-        preflight = validate_constructor(environment_type, provider)
-        if not preflight["passed"]:
-            raise TurboContractError(preflight)
-    elif api_version == 1:
-        parameters = inspect.signature(environment_type).parameters
-        kwargs = {name: value for name, value in kwargs.items() if name in parameters}
-    else:
-        raise TurboContractError(legacy_report(provider, api_version))
-    env = environment_type(game=game, **kwargs)
-    if api_version == 1:
-        return env, legacy_report(provider, 1)
-    report = validate_environment(environment_type, env, provider)
-    if not report["passed"]:
-        env.close()
-        raise TurboContractError(report)
-    return env, report
+    if api_version != 2:
+        raise TurboContractError(unsupported_api_report(provider, api_version))
+    return environment_type(game=game, **kwargs)
+
+
+def _probe_contract(request: dict[str, Any], profile: Profile) -> tuple[dict[str, Any], str, bool]:
+    """Consume one environment while exercising its complete runtime contract."""
+
+    provider = str(request["provider"])
+    shape = int(request["shape"])
+    frame_skip = int(request.get("frame_skip", profile.frame_skip))
+    instance_id = uuid.uuid4().hex
+    closed = False
+    if request.get("adapter") == "fake":
+        env = _InMemoryFakeV2Env(
+            "Poison-v0" if "poison" in provider else "Fake-v0",
+            num_envs=shape,
+            obs_copy="copy",
+            render_mode="rgb_array",
+        )
+        try:
+            instance_id = uuid.uuid4().hex
+            report = validate_environment(_InMemoryFakeV2Env, env, provider)
+            if "contract-failure" in provider:
+                report = {
+                    **report,
+                    "passed": False,
+                    "promotable": False,
+                    "errors": [*report.get("errors", []), "injected fake contract failure"],
+                }
+                report["report_sha256"] = canonical_json_hash(
+                    {key: value for key, value in report.items() if key != "report_sha256"}
+                )
+        finally:
+            env.close()
+            closed = True
+        return report, instance_id, closed
+    if request.get("adapter") == "turbo-vector-v2":
+        environment_type, game, options, overlay = _turbo_construction(request, profile, frame_skip)
+        env: Any | None = None
+        try:
+            api_version = declared_api_version(environment_type)
+            if api_version == 2:
+                preflight = validate_constructor(environment_type, provider)
+                if not preflight["passed"]:
+                    return preflight, instance_id, True
+            else:
+                return unsupported_api_report(provider, api_version), instance_id, True
+            env = _construct_turbo_workload_environment(environment_type, provider, game, options)
+            instance_id = uuid.uuid4().hex
+            report = validate_environment(environment_type, env, provider)
+        finally:
+            if env is not None:
+                env.close()
+            if overlay is not None:
+                overlay.cleanup()
+            closed = True
+        return report, instance_id, closed
+    if provider in {"stable-retro", "vizdoom"}:
+        adapter = _create_scalar_adapter(request, profile, frame_skip)
+        instance_id = adapter.instance_id
+        try:
+            adapter.initial_reset(int(request.get("seed", 123)))
+            action = adapter.benchmark_action(np.zeros(shape, dtype=np.int64))
+            _observations, _rewards, terminated, truncated, _infos = adapter.step(action)
+            done = np.logical_or(terminated, truncated)
+            if np.any(done):
+                adapter.selective_reset(done)
+            adapter.render_frames()
+            report = adapter.contract_report
+        finally:
+            adapter.close()
+            closed = adapter.closed
+        return report, instance_id, closed
+    raise ValueError(f"no built-in adapter for {provider!r}")
 
 
 def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip: int) -> Adapter:
@@ -1541,6 +1471,7 @@ def _create_scalar_adapter(request: dict[str, Any], profile: Profile, frame_skip
         ScalarWorkerConfig(
             provider=provider,
             profile_id=profile.id,
+            representation_conversion=profile.allowed_representation_conversion,
             game=profile.game,
             state=profile.states[lane % len(profile.states)],
             integration_path=integration_path,
@@ -1679,8 +1610,39 @@ def _snapshot_mismatches(
     return mismatches
 
 
+def _snapshot_episode_window(
+    trace: Sequence[Mapping[str, Any]], prefix_steps: int, suffix_steps: int
+) -> list[Mapping[str, Any]]:
+    """Return the requested continuation through its first lifecycle boundary."""
+    expected = list(trace[prefix_steps : prefix_steps + suffix_steps])
+    for index, record in enumerate(expected):
+        if record.get("reset_lanes"):
+            return expected[: index + 1]
+    return expected
+
+
+def _workload_lifecycle(adapter: Adapter | FakeAdapter) -> dict[str, Any]:
+    if adapter.attestation_sha256 is None:
+        raise RuntimeError("workload adapter has no contract attestation binding")
+    record = {
+        **evidence_binding(adapter.attestation_sha256),
+        "environment_instance_id": adapter.instance_id,
+        "dynamic_contract_validation_calls": 0,
+    }
+    if isinstance(adapter, FakeAdapter):
+        record.update(
+            {
+                "process_poisoned_at_construction": adapter.process_poisoned_at_construction,
+                "instance_poisoned": adapter.instance_poisoned,
+                "render_calls": adapter.render_calls,
+            }
+        )
+    return record
+
+
 def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     try:
         observations, reset_infos = adapter.initial_reset(int(request.get("seed", 123)))
         frames = adapter.render_frames()
@@ -1728,11 +1690,11 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
 
         snapshot_continuation = None
         if snapshots is not None:
-            expected = trace[snapshot_prefix : snapshot_prefix + snapshot_suffix]
+            expected = _snapshot_episode_window(trace, snapshot_prefix, snapshot_suffix)
             adapter.restore_snapshots(snapshots)
             replayed: list[dict[str, Any]] = []
             for offset, action in enumerate(
-                prepared[snapshot_prefix : snapshot_prefix + snapshot_suffix],
+                prepared[snapshot_prefix : snapshot_prefix + len(expected)],
                 start=snapshot_prefix + 1,
             ):
                 record, done = _trace_transition(
@@ -1748,7 +1710,8 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                     adapter.render_frames()
             snapshot_continuation = {
                 "prefix_steps": snapshot_prefix,
-                "suffix_steps": snapshot_suffix,
+                "requested_suffix_steps": snapshot_suffix,
+                "suffix_steps": len(expected),
                 "uninterrupted_sha256": canonical_json_hash(expected),
                 "replayed_sha256": canonical_json_hash(replayed),
                 "replay_exact": expected == replayed,
@@ -1757,9 +1720,9 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
 
         result = {
             "schema": (
-                "turbobench.semantic-trace/v2"
+                "turbobench.semantic-trace/v3"
                 if profile.native_transition_exact
-                else "turbobench.trace/v1"
+                else "turbobench.trace/v2"
             ),
             "provider": request["provider"],
             "profile": profile.id,
@@ -1770,40 +1733,60 @@ def run_trace(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
             "reset_points": reset_points,
             "completion_step": _completion_step(trace, profile.completion),
             "environment": adapter.metadata(),
+            "lifecycle": _workload_lifecycle(adapter),
         }
         if snapshot_continuation is not None:
             result["snapshot_continuation"] = snapshot_continuation
         return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     try:
         actions = np.asarray(request["actions"], dtype=np.int64)
         prepared = [adapter.benchmark_action(row) for row in actions]
         warmup_count = int(request.get("warmup_steps", min(500, len(prepared))))
         adapter.initial_reset(int(request.get("seed", 123)))
         _rollout(adapter, prepared[:warmup_count])
+        repetition_count = int(request.get("repetitions", 3))
+        if repetition_count != (1 if request.get("smoke") is True else 3):
+            raise ValueError("only smoke may use one timed repetition")
+        if request.get("smoke") and warmup_count != 0:
+            raise ValueError("smoke must have no warmup")
         if isinstance(adapter, FakeAdapter):
             base = 10_000.0 * adapter.speed * adapter.num_envs**0.2
-            repetitions = [base * factor for factor in (0.999, 1.0, 1.001)]
+            if adapter.process_poisoned_at_construction or adapter.instance_poisoned:
+                base *= 0.1
+            repetitions = (
+                [base]
+                if repetition_count == 1
+                else [base * factor for factor in (0.999, 1.0, 1.001)]
+            )
         else:
             repetitions = []
-            for repetition in range(3):
-                adapter.initial_reset(int(request.get("seed", 123)) + repetition)
+            for repetition in range(repetition_count):
+                seed = int(request.get("seed", 123))
+                adapter.initial_reset(
+                    seed if request.get("replicate_initial_seed") else seed + repetition
+                )
                 started = time.perf_counter_ns()
                 _rollout(adapter, prepared)
                 elapsed_ns = time.perf_counter_ns() - started
                 repetitions.append(len(prepared) * adapter.num_envs * 1e9 / elapsed_ns)
-        return {
-            "schema": "turbobench.invocation/v1",
+        result = {
+            "schema": "turbobench.invocation/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "shape": adapter.num_envs,
             "steps": len(prepared),
-            "repetitions": 3,
+            "repetitions": repetition_count,
+            "smoke": request.get("smoke") is True,
+            "warmup_steps": warmup_count,
             "sps": repetitions,
             "action_stream_sha256": request["action_stream_sha256"],
             "timed_includes": [
@@ -1818,15 +1801,21 @@ def run_benchmark(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
                 "construction",
                 "initial_reset",
                 "action_generation",
+                "policy_inference",
+                "trajectory_recording",
                 "warmup",
                 "correctness",
                 "rendering",
                 "encoding",
             ],
             "turbo_contract_report": adapter.contract_report,
+            "lifecycle": _workload_lifecycle(adapter),
         }
+        return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
@@ -1834,7 +1823,8 @@ def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[st
     seeds = tuple(map(int, request.get("seeds", range(256))))
     if profile.logical_environment != "breakout" or maximum <= 0 or len(seeds) < 32:
         raise ValueError("reset distribution requires Breakout, a positive maximum, and 32 seeds")
-    adapter = _create_adapter({**request, "noop_reset_max": maximum}, profile)
+    adapter = _create_workload_adapter({**request, "noop_reset_max": maximum}, profile)
+    result: dict[str, Any] | None = None
     try:
         if adapter.num_envs != 1:
             raise ValueError("reset distribution uses one lane")
@@ -1854,29 +1844,83 @@ def run_reset_distribution(request: dict[str, Any], profile: Profile) -> dict[st
                     "infos": selected,
                 }
             )
-        return {
-            "schema": "turbobench.reset-distribution/v1",
+        result = {
+            "schema": "turbobench.reset-distribution/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "maximum": maximum,
             "samples": samples,
+            "lifecycle": _workload_lifecycle(adapter),
+        }
+        return result
+    finally:
+        adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
+
+
+def run_declaration(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
+    """Read exact runtime capabilities in a fresh, excluded introspection instance."""
+    adapter = _create_workload_adapter(request, profile)
+    try:
+        observations, _infos = adapter.initial_reset(int(request.get("seed", 123)))
+        env = getattr(adapter, "env", None)
+        capabilities = _jsonable(dict(getattr(env, "capabilities", {})))
+        if request["adapter"] in {"stable-retro-scalar", "vizdoom-scalar", "fake"}:
+            # Capabilities of the scalar preprocessing adapter, rather than a
+            # guessed declaration for its upstream package.
+            capabilities = {
+                "supported_observation_layouts": ["chw"],
+                "supported_observation_color_modes": ["grayscale"],
+                "supported_resize_algorithms": ["area"],
+                "supported_crop_modes": ["remove", "mask"],
+                "supports_maxpool_last_two": False,
+            }
+        states = _jsonable(getattr(env, "state_catalog", profile.states))
+        table = getattr(adapter, "_table", tuple(profile.action_table.values()))
+        result = {
+            "schema": "turbobench.environment-declaration/v1",
+            "provider": request["execution_spec"]["provider"],
+            "capabilities": capabilities,
+            "states": states,
+            "actions": _jsonable(table),
+            "observation_shape": list(np.asarray(observations).shape[1:]),
+            "preflight": request["declaration_preflight"],
+            "lifecycle": _workload_lifecycle(adapter),
         }
     finally:
         adapter.close()
+    result["lifecycle"]["environment_closed"] = adapter.closed
+    return result
 
 
 def run_contract(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
-    try:
-        return {
-            "schema": "turbobench.contract-preflight/v1",
-            "provider": request["provider"],
-            "profile": profile.id,
-            "workload_executed": False,
-            "turbo_contract_report": adapter.contract_report,
-        }
-    finally:
-        adapter.close()
+    require_request_matches_spec(request, request["execution_spec"])
+    report, instance_id, closed = _probe_contract(request, profile)
+    contract_attestation = attest(request["execution_spec"], report)
+    return {
+        "schema": "turbobench.contract-preflight/v2",
+        "provider": request["provider"],
+        "profile": profile.id,
+        "shape": int(request["shape"]),
+        "workload_executed": False,
+        "turbo_contract_report": report,
+        "execution_spec": request["execution_spec"],
+        "contract_attestation": contract_attestation,
+        "lifecycle": {
+            "execution_protocol": contract_attestation["protocol"],
+            "environment_instance_id": instance_id,
+            "environment_closed": closed,
+            "process_global_poisoned": (
+                _FAKE_PROCESS_POISONED if request.get("adapter") == "fake" else None
+            ),
+            "instance_poisoned": (
+                "poison" in str(request.get("provider"))
+                if request.get("adapter") == "fake"
+                else None
+            ),
+        },
+    }
 
 
 def _rollout(adapter: Adapter | FakeAdapter, prepared: Sequence[np.ndarray]) -> None:
@@ -1888,7 +1932,8 @@ def _rollout(adapter: Adapter | FakeAdapter, prepared: Sequence[np.ndarray]) -> 
 
 
 def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any]:
-    adapter = _create_adapter(request, profile)
+    adapter = _create_workload_adapter(request, profile)
+    result: dict[str, Any] | None = None
     output = Path(request["output_frames"])
     output.parent.mkdir(parents=True, exist_ok=True)
     frame_hashes: list[str] = []
@@ -1931,8 +1976,8 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
                     if completion_step is None:
                         completion_step = step
                     break
-        return {
-            "schema": "turbobench.replay/v1",
+        result = {
+            "schema": "turbobench.replay/v2",
             "provider": request["provider"],
             "profile": profile.id,
             "action_stream_sha256": request["promo_action_sha256"],
@@ -1942,11 +1987,15 @@ def run_promo_replay(request: dict[str, Any], profile: Profile) -> dict[str, Any
             "frame_sha256": frame_hashes,
             "transitions": transitions,
             "completion_step": completion_step,
-            "raw_file_sha256": sha256_file(output),
+            "raw_file_sha256": sha256_file(output) if str(output) != os.devnull else None,
             "turbo_contract_report": adapter.contract_report,
+            "lifecycle": _workload_lifecycle(adapter),
         }
+        return result
     finally:
         adapter.close()
+        if result is not None:
+            result["lifecycle"]["environment_closed"] = adapter.closed
 
 
 def _completion_step(trace: Sequence[dict[str, Any]], completion: dict[str, Any]) -> int | None:
@@ -2000,12 +2049,36 @@ def _jsonable(value: Any) -> Any:
 
 
 def execute(request: dict[str, Any]) -> dict[str, Any]:
-    profile = get_profile(str(request["profile"]))
+    from turbobench.workloads import request_profile
+
+    profile = request_profile(request)
     operation = request["operation"]
+    if profile.action_stream_version == "captured-policy/v1" and operation in {
+        "trace",
+        "benchmark",
+    }:
+        from turbobench.profiles import action_stream_hash, canonical_actions
+        from turbobench.workloads import policy_benchmark_settings
+
+        expected_actions = canonical_actions(profile, int(request["shape"]))
+        if (
+            request["actions"] != expected_actions.tolist()
+            or request["action_stream_sha256"] != action_stream_hash(profile, expected_actions)
+            or any(
+                request.get(key) != value
+                for key, value in policy_benchmark_settings(profile).items()
+            )
+        ):
+            raise ValueError("runner policy actions/reset differ from locked workload")
+    if operation in _WORKLOAD_OPERATIONS:
+        require_request_matches_spec(request, request.get("execution_spec", {}))
+        require_attestation(request.get("execution_spec", {}), request.get("contract_attestation"))
     started = time.time_ns()
     try:
         if operation == "contract":
             payload = run_contract(request, profile)
+        elif operation == "declaration":
+            payload = run_declaration(request, profile)
         elif operation == "trace":
             payload = run_trace(request, profile)
         elif operation == "benchmark":
@@ -2026,7 +2099,14 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
             "workload_executed": False,
             "turbo_contract_report": exc.report,
         }
+    if profile.action_stream_version == "captured-policy/v1" and operation in {
+        "trace",
+        "benchmark",
+    }:
+        payload["policy_reset"] = policy_benchmark_settings(profile)
     payload["runner"] = {
+        "pid": os.getpid(),
+        "operation": operation,
         "python": os.sys.version.split()[0],
         "provider_distribution": request.get("distribution"),
         "provider_version": _distribution_version(request.get("distribution")),

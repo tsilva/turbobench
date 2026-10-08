@@ -22,12 +22,20 @@ turbobench gives reinforcement-learning environment authors and users a provider
 
 ### Comparisons
 
+- Use one workload definition across parity, light comparison, and full comparison while keeping parity as a separate command; make full comparison include light-comparison guarantees, and reuse compatible evidence without requiring comparisons to run canonical parity.
+- Contract validation, correctness, timing, and replay must use phase-isolated provider processes and fresh environment instances; no operation excluded from timing may mutate an instance used for timed measurement.
 - Compare providers only when they are explicitly compatible with the same logical environment and workload; never rank or compare different games or unmatched workloads.
 - The first complete release must support `env-supermariobrosnes-turbo-emu`, `env-breakoutatari2600-turbo-native`, `env-stableretro-turbo`, and `env-vizdoom-turbo` against their compatible upstream or Turbo providers.
 - Support latest eligible package releases, exact package versions, exact local distribution artifacts, and clean local checkouts while resolving every run to isolated, exact, hash-recorded runtime artifacts.
 - Use matched correctness checks, alternating paired measurements, statistical uncertainty, system-load gates, and complete provenance before treating a result as valid.
 - Allow a fully gated result from any host to be an official claim, while keeping failed or overridden runs clearly diagnostic and non-promotable.
 - Produce portable, self-verifying result bundles without uploading or publishing them in the initial release.
+
+- Provide one comparison workflow that produces portable benchmark evidence, a policy-backed `n_envs=1` comparison video, and a speedup chart across the profile's declared environment counts.
+- Performance measurements must run on a different machine from showcase asset generation, with both host roles bound into the portable evidence.
+- Policy-backed comparison evidence must lock the exact checkpoint and saved training configuration; playback must match that training contract, and deliberate benchmark workload differences must be disclosed.
+- Proof packages must use versioned, machine-verifiable schemas that bind benchmark evidence, policy provenance, replay evidence, and every derived showcase asset.
+- Resolve policy-backed comparison workloads in turbobench from exact provider declarations, saved policy contracts, and turbobench-owned comparison rules; preserve one authoritative source for each setting and freeze the complete resolved workload and its source identities into portable evidence.
 
 ### Promotional media
 

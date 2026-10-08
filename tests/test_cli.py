@@ -19,6 +19,7 @@ def test_cli_exposes_benchmark_and_parity_commands(capsys) -> None:
         "parity",
         "verify",
         "verify-parity",
+        "export-publication",
         "report",
         "promo",
     ):
@@ -51,7 +52,7 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
     output = tmp_path / "bundle"
 
     def fake_run(profile, left, right, bundle, options):
-        assert profile == "supermario/canonical-v1"
+        assert profile == "supermario/world1-v1"
         assert left.provider == "env-supermariobrosnes-turbo-emu"
         assert right.provider == "env-stableretro-turbo"
         options.report_progress("Resolving package artifacts")
@@ -63,19 +64,51 @@ def test_compare_streams_progress_to_stderr_and_keeps_json_on_stdout(
         }
 
     monkeypatch.setattr("turbobench.cli.run_comparison", fake_run)
-    assert main(
-        [
-            "compare",
-            "supermario/canonical-v1",
-            "--left",
-            "env-supermariobrosnes-turbo-emu@latest",
-            "--right",
-            "env-stableretro-turbo@latest",
-            "--output",
-            str(output),
-        ]
-    ) == 0
+    exports = []
+
+    def fake_export(proof):
+        exports.append(proof)
+        return proof.with_name(proof.name + "-publication")
+
+    monkeypatch.setattr("turbobench.publication.export_publication", fake_export)
+    assert (
+        main(
+            [
+                "compare",
+                "supermario/world1-v1",
+                "--left",
+                "env-supermariobrosnes-turbo-emu@latest",
+                "--right",
+                "env-stableretro-turbo@latest",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     assert captured.err == "turbobench: Resolving package artifacts\n"
-    assert json.loads(captured.out)["bundle"] == str(output.resolve())
+    payload = json.loads(captured.out)
+    assert payload["bundle"] == str(output.resolve())
+    assert payload["publication"] == str(output.resolve()) + "-publication"
+    assert exports == [output.resolve()]
+
+
+@pytest.mark.parametrize("flag", ["--showcase", "--policy-benchmark"])
+def test_policy_workflows_export_the_finished_proof(flag, tmp_path, monkeypatch, capsys):
+    output = tmp_path / "proof"
+    monkeypatch.setattr("turbobench.defaults.apply_comparison_defaults", lambda _: None)
+    monkeypatch.setattr("turbobench.workflow.run_workflow", lambda args, path, progress: path)
+    exported = []
+
+    def export(proof):
+        exported.append(proof)
+        return proof.with_name(proof.name + "-publication")
+
+    monkeypatch.setattr("turbobench.publication.export_publication", export)
+    assert main(["compare", "breakout/firstwall-policy-v1", flag, "--output", str(output)]) == 0
+    assert exported == [output]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["publication"] == str(output) + "-publication"
+    assert payload["pipeline_passed"] is True

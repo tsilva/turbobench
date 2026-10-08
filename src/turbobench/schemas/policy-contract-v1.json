@@ -1,0 +1,91 @@
+{
+  "$id": "turbobench.policy-contract/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_contract": {
+      "type": "object"
+    },
+    "action_sha256": {
+      "type": "string"
+    },
+    "benchmark_differences": {
+      "type": "array"
+    },
+    "checkpoint_sha256": {
+      "type": "string"
+    },
+    "checkpoint_step": {
+      "type": "integer"
+    },
+    "decisions": {
+      "type": "integer"
+    },
+    "environment": {
+      "type": "object"
+    },
+    "execution_contract": {
+      "type": "object"
+    },
+    "frame_skip": {
+      "type": "integer"
+    },
+    "layout": {
+      "type": "string"
+    },
+    "limitations": {
+      "type": "string"
+    },
+    "mlflow_url": {
+      "type": "string"
+    },
+    "recipe_sha256": {
+      "type": "string"
+    },
+    "reset_noop_prefix": {
+      "type": "integer"
+    },
+    "schema": {
+      "const": "turbobench.policy-contract/v1",
+      "type": "string"
+    },
+    "selection": {
+      "type": "object"
+    },
+    "total_captured_decisions": {
+      "type": "integer"
+    },
+    "training_environment_sha256": {
+      "type": "string"
+    },
+    "training_run": {
+      "type": "string"
+    },
+    "training_versions": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "checkpoint_sha256",
+    "recipe_sha256",
+    "training_environment_sha256",
+    "frame_skip",
+    "action_sha256",
+    "selection",
+    "decisions",
+    "total_captured_decisions",
+    "training_run",
+    "checkpoint_step",
+    "mlflow_url",
+    "limitations",
+    "benchmark_differences",
+    "environment",
+    "action_contract",
+    "execution_contract",
+    "training_versions",
+    "layout",
+    "reset_noop_prefix"
+  ],
+  "type": "object"
+}

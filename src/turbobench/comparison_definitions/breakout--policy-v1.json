@@ -1,0 +1,40 @@
+{
+  "allowed_representation_conversion": "stable-retro-platform-rgb565-to-training-bgr-and-canonical-stella-rgb/v1",
+  "assets": {
+    "game_payload_sha256": "376323f051c3c373c887fd83abead39d87d844ff283d435f4addbfc1710c6fd5",
+    "required": true,
+    "states": {
+      "Start": "7020a72745c7e1df9284e8da0dd1ddae1f1cf2ac8ca24fbc51b743c001195b79"
+    }
+  },
+  "authority": "stable-retro",
+  "authority_version": "1.0.1",
+  "candidates": [
+    "env-breakoutatari2600-turbo-native",
+    "env-stableretro-turbo"
+  ],
+  "checks": [
+    "action-identity",
+    "transition-exact",
+    "reset-exact",
+    "snapshot-continuation",
+    "required-info",
+    "reset-distribution"
+  ],
+  "game": "Breakout-Atari2600-v0",
+  "id": "breakout/policy-v1",
+  "info_float": [],
+  "info_integer": [
+    "score",
+    "lives",
+    "ball_y"
+  ],
+  "logical_environment": "breakout",
+  "protocol": "paired-environment/v1",
+  "providers": [
+    "env-breakoutatari2600-turbo-native",
+    "env-stableretro-turbo",
+    "stable-retro"
+  ],
+  "schema": "turbobench.comparison-definition/v1"
+}

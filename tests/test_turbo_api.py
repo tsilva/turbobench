@@ -5,13 +5,13 @@ from types import MappingProxyType
 from typing import ClassVar
 
 import numpy as np
+import pytest
 
-from turbobench.runner import _construct_turbo_environment
+from turbobench.runner import _construct_turbo_workload_environment
 from turbobench.turbo_api import (
     CAPABILITY_KEYS,
     COMMON_CONSTRUCTOR_DEFAULTS,
     TurboContractError,
-    legacy_report,
     validate_constructor,
     validate_environment,
 )
@@ -198,6 +198,24 @@ def test_normative_constructor_and_runtime_validator_pass() -> None:
     assert len(report["report_sha256"]) == 64
 
 
+def test_runtime_report_does_not_expose_state_catalog_paths(tmp_path) -> None:
+    env = ConformingFakeV2(
+        "Fake-v0", num_envs=2, state_catalog=("default",), render_mode="rgb_array"
+    )
+    private_state = str(tmp_path / "private" / "Start.state")
+    env.state_catalog = (private_state,)
+
+    report = validate_environment(ConformingFakeV2, env, "private-catalog")
+
+    assert report["passed"]
+    assert private_state not in repr(report)
+    catalog_checks = [
+        check for check in report["checks"] if "state catalog" in check["name"]
+    ]
+    assert catalog_checks
+    assert all(check["detail"] == "type=tuple, count=1" for check in catalog_checks)
+
+
 def test_named_sequence_capability_extension_is_strictly_validated() -> None:
     env = ConformingFakeV2(
         "Fake-v0", num_envs=2, state_catalog=("default",), render_mode="rgb_array"
@@ -273,33 +291,36 @@ def test_malformed_v2_is_rejected_before_construction() -> None:
             nonlocal constructions
             constructions += 1
 
-    with np.testing.assert_raises(TurboContractError):
-        _construct_turbo_environment(Bad, "bad", "Bad-v0", {})
+    report = validate_constructor(Bad, "bad")
+    assert not report["passed"]
     assert constructions == 0
 
 
-def test_v1_is_runnable_but_not_promotable() -> None:
-    report = legacy_report("legacy", 1)
-    assert report["passed"]
-    assert not report["promotable"]
+def test_v1_is_rejected_before_construction() -> None:
+    constructions = 0
 
     class Legacy:
         metadata: ClassVar[dict[str, object]] = {"turbo_api_version": 1}
 
         def __init__(self, game, num_envs=1):
+            nonlocal constructions
+            constructions += 1
             self.game = game
             self.num_envs = num_envs
 
-    env, constructed_report = _construct_turbo_environment(
-        Legacy,
-        "legacy",
-        "Legacy-v0",
-        {"num_envs": 3, "transport": "numpy", "state_catalog": ["Start"]},
-    )
-    assert env.game == "Legacy-v0"
-    assert env.num_envs == 3
-    assert constructed_report["passed"]
-    assert not constructed_report["promotable"]
+    with pytest.raises(TurboContractError) as caught:
+        _construct_turbo_workload_environment(
+            Legacy,
+            "legacy",
+            "Legacy-v0",
+            {"num_envs": 3, "transport": "numpy", "state_catalog": ["Start"]},
+        )
+
+    report = caught.value.report
+    assert not report["passed"]
+    assert not report["promotable"]
+    assert report["errors"] == ["Turbo Vector API v1 is unsupported; provider must declare v2"]
+    assert constructions == 0
 
 
 def test_torch_is_imported_lazily_for_numpy_validation(monkeypatch) -> None:

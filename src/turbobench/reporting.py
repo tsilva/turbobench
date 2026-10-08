@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from turbobench.privacy import public_text
 from turbobench.util import atomic_write
 
 
@@ -20,6 +21,7 @@ def render_report(result: dict[str, Any]) -> str:
         f"- Claim status: `{result['claim']['status']}`",
         f"- Shape-1 outcome: `{comparison['outcome']}`",
         f"- Promo eligible: `{str(result['promo']['eligible']).lower()}`",
+        f"- Execution protocol: `{result.get('execution_protocol', 'legacy-contaminable')}`",
         f"- Left: `{left['provider']}=={left['version']}`",
         f"- Right: `{right['provider']}=={right['version']}`",
         "",
@@ -30,13 +32,41 @@ def render_report(result: dict[str, Any]) -> str:
     ]
     for shape, payload in sorted(comparison["shapes"].items(), key=lambda item: int(item[0])):
         stats = payload["statistics"]
-        lower, upper = stats["bootstrap"]["ci"]
+        lower, upper = stats["bootstrap"]["ci"] if stats["bootstrap"] else (0.0, 0.0)
+        ci = f"[{lower:.4f}, {upper:.4f}]" if stats["bootstrap"] else "unavailable (smoke)"
         lines.append(
             f"| {shape} | {stats['median_left_sps']:,.1f} | {stats['median_right_sps']:,.1f} | "
-            f"{stats['median_paired_ratio_left_over_right']:.4f}× | [{lower:.4f}, {upper:.4f}] | "  # noqa: RUF001
+            f"{stats['median_paired_ratio_left_over_right']:.4f}× | {ci} | "  # noqa: RUF001
             f"{stats['outcome']} |"
         )
-    lines.extend(("", "No SPS values are aggregated across shapes. Shape 1 is the promo basis.", ""))
+    lines.extend(
+        ("", "No SPS values are aggregated across shapes. Shape 1 is the promo basis.", "")
+    )
+    if "scaling" in result:
+        scaling = result["scaling"]
+        rule = scaling["rule"]
+        lines.extend(
+            (
+                "## Adaptive scaling",
+                "",
+                "Counts double from 1. Each provider is compared with its best earlier median SPS. "
+                f"Plateau: {rule['plateau_confirmations']} successive gains below {rule['minimum_gain']:.0%}; "
+                f"downgrade: a drop of at least {rule['downgrade_fraction']:.0%}. "
+                "Continue until both providers qualify. This is a throughput stopping heuristic; "
+                "paired confidence intervals assess speedup at each measured count.",
+                "",
+                f"Stop: `{scaling['stop_reason']}`; saturation established: `{str(scaling['complete']).lower()}`. "
+                f"Safety cap: {rule['max_n_envs']} environments. A cap stop remains diagnostic.",
+                "",
+                "| Envs | Left status | Right status |",
+                "| ---: | :--- | :--- |",
+            )
+        )
+        for row in scaling["history"]:
+            lines.append(
+                f"| {row['n_envs']} | {row['providers']['left']['status']} | {row['providers']['right']['status']} |"
+            )
+        lines.append("")
     lines.extend(("## Validity gates", ""))
     for gate in result["validity"]["gates"]:
         mark = "PASS" if gate["passed"] else "FAIL"
@@ -50,18 +80,33 @@ def render_report(result: dict[str, Any]) -> str:
             "Every invocation contains three repetitions; invocation medians form paired ratios and a deterministic "
             "20,000-resample bootstrap 95% confidence interval.",
             "",
+            "Contract validation, correctness traces, warmups, timed measurements, and promotional replay use "
+            "phase-isolated provider processes and fresh environment instances. Each workload evidence record "
+            "references the successful attestation for its exact execution configuration.",
+            "",
             "Timed SPS includes preprocessing, IPC, infos, terminal detection, and selective resets. It excludes "
             "construction, initial reset, action generation, warmup, correctness replay, rendering, and encoding.",
             "",
         )
     )
-    return "\n".join(lines)
+    if result.get("sampling", {}).get("mode") == "smoke":
+        lines.extend(
+            (
+                "",
+                "SMOKE / DIAGNOSTIC: one pair per shape, one timed repetition per provider, zero warmups. No CI or significance claim.",
+                "",
+            )
+        )
+    return public_text("\n".join(lines))
 
 
 def render_chart(result: dict[str, Any]) -> str:
     shapes = sorted(result["comparison"]["shapes"].items(), key=lambda item: int(item[0]))
     maximum = max(
-        max(float(item[1]["statistics"]["median_left_sps"]), float(item[1]["statistics"]["median_right_sps"]))
+        max(
+            float(item[1]["statistics"]["median_left_sps"]),
+            float(item[1]["statistics"]["median_right_sps"]),
+        )
         for item in shapes
     )
     width, height = 960, 140 + len(shapes) * 115

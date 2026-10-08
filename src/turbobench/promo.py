@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from turbobench.lifecycle import EXECUTION_PROTOCOL
 from turbobench.util import canonical_json_hash, redact, sha256_file, write_json
 
 FPS = 60
@@ -22,6 +23,7 @@ VIDEO_SIZE = (1280, 720)
 def promo_is_eligible(result: dict[str, Any], replay_gate: dict[str, Any] | None = None) -> bool:
     return bool(
         result["validity"]["passed"]
+        and result.get("execution_protocol") == EXECUTION_PROTOCOL
         and result["claim"]["status"] == "official"
         and result["comparison"]["outcome"] != "inconclusive"
         and (replay_gate or {}).get("passed")
