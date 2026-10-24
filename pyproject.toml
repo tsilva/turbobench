@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
   "numpy>=1.26,<3",
   "packaging>=24,<27",
-  "pillow>=10.4,<13",
+  "pillow>=10.4,<14",
 ]
 
 [project.scripts]
