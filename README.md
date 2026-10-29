@@ -81,6 +81,9 @@ for provider selectors, Breakout comparisons, evidence reuse, and measurement
 details. The [parity guide](https://github.com/tsilva/turbobench/blob/main/docs/parity.md)
 covers dirty-checkout diagnostics and certification of an exact final wheel.
 
+Development installs use the committed uv lock, including Pillow 13 for patched
+image and comparison-media processing. Run `uv audit --frozen` after dependency changes.
+
 ## Two-host showcases
 
 Available in the published CLI. Run from the render machine, replacing the
