@@ -84,6 +84,9 @@ covers dirty-checkout diagnostics and certification of an exact final wheel.
 Development installs use the committed uv lock, including Pillow 13 for patched
 image and comparison-media processing. Run `uv audit --frozen` after dependency changes.
 
+CI is configured to run lint and non-acceptance tests on macOS 15 (Apple Silicon)
+and Ubuntu 24.04, with Python 3.11 and 3.14 on each platform.
+
 ## Two-host showcases
 
 Available in the published CLI. Run from the render machine, replacing the
