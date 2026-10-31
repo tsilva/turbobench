@@ -1,5 +1,5 @@
 ---
-name: comparison-showcase
+name: turbobench_comparison-showcase
 description: Run a two-host TurboBench comparison with a locked GradLab policy, verified proof data, a README animation, and a scaling chart. Use when creating or refreshing comparison showcases for any environment.
 ---
 

@@ -261,8 +261,8 @@ The user approved implementation of this proposal. These bullets are recorded in
 - Policy-backed comparison evidence must lock the exact checkpoint and saved training configuration; playback must match that training contract, and deliberate benchmark workload differences must be disclosed.
 - Proof packages must use versioned, machine-verifiable schemas that bind benchmark evidence, policy provenance, replay evidence, and every derived showcase asset.
 
-Proposed project skill: `comparison-showcase`, located at
-`.codex/skills/comparison-showcase/SKILL.md`. It would route future requests to
+Proposed project skill: `turbobench_comparison-showcase`, located at
+`.codex/skills/turbobench_comparison-showcase/SKILL.md`. It would route future requests to
 the approved style and this workflow document, require locked policy metadata
 and verified evidence before rendering, keep comparison logic in TurboBench,
 and verify full-resolution README assets. Its agent instructions would clearly

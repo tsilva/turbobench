@@ -86,14 +86,14 @@ jobs:
       - name: Validate release metadata
         run: >-
           uv run --frozen python
-          .codex/skills/build-release/scripts/release_build.py
+          .codex/skills/turbobench_build-release/scripts/release_build.py
           check-version --version "${{ steps.version.outputs.version }}"
 
       - name: Check PyPI version is unused
         if: github.event_name == 'push'
         run: >-
           uv run --frozen python
-          .codex/skills/build-release/scripts/release_build.py
+          .codex/skills/turbobench_build-release/scripts/release_build.py
           check-pypi --version "${{ steps.version.outputs.version }}"
 
       - name: Run source checks
@@ -104,7 +104,7 @@ jobs:
       - name: Build and audit distributions
         run: >-
           uv run --frozen python
-          .codex/skills/build-release/scripts/release_build.py
+          .codex/skills/turbobench_build-release/scripts/release_build.py
           build --version "${{ steps.version.outputs.version }}"
           --out-dir "dist/release-v${{ steps.version.outputs.version }}"
 

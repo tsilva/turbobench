@@ -1,6 +1,6 @@
 ---
-name: build-release
-description: Build, audit, publish, monitor, or verify turbobench-cli Python releases. Use when the user invokes /build-release or $build-release; asks to build release artifacts or a local candidate; requests a specific version; asks to cut, tag, publish, or monitor the turbobench-cli PyPI project; or wants to confirm that an exact version is live.
+name: turbobench_build-release
+description: Build, audit, publish, monitor, or verify turbobench-cli Python releases. Use when the user invokes /turbobench_build-release or $turbobench_build-release; asks to build release artifacts or a local candidate; requests a specific version; asks to cut, tag, publish, or monitor the turbobench-cli PyPI project; or wants to confirm that an exact version is live.
 ---
 
 # Build Release
@@ -21,7 +21,7 @@ Publish to the PyPI project `turbobench-cli`. Keep the installed command and
 Python import named `turbobench`; normalized distribution files use the
 `turbobench_cli-<version>` prefix.
 
-Treat an unqualified `/build-release` or `$build-release` invocation as a
+Treat an unqualified `/turbobench_build-release` or `$turbobench_build-release` invocation as a
 request to complete the publication flow. Use the local-candidate flow only
 when the user explicitly asks for artifacts, a candidate, a dry run,
 validation-only work, or no publication.
@@ -56,7 +56,7 @@ the portable release gate. Download `release-v<version>` into a fresh external
 directory, then audit its existing artifacts:
 
 ```bash
-python3 .codex/skills/build-release/scripts/release_build.py audit \
+python3 .codex/skills/turbobench_build-release/scripts/release_build.py audit \
   --version <version> --dist-dir <download-directory>
 ```
 
@@ -109,7 +109,7 @@ the GitHub Release for the same tag.
 Use the existing exact-version verifier:
 
 ```bash
-python3 .codex/skills/build-release/scripts/release_build.py \
+python3 .codex/skills/turbobench_build-release/scripts/release_build.py \
   wait-pypi --version <version>
 ```
 

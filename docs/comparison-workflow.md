@@ -356,7 +356,7 @@ Standalone chart export remains available with
 `python -m turbobench.readme_chart BENCHMARK_PROOF OUTPUT.svg [--full]`.
 See the [README presentation constraints](comparison-media.md#readme-view).
 
-Use the project skill `.codex/skills/comparison-showcase/SKILL.md` and the
+Use the project skill `.codex/skills/turbobench_comparison-showcase/SKILL.md` and the
 [approved presentation reference](comparison-media.md) when refreshing assets.
 
 ## Workload ownership and migration

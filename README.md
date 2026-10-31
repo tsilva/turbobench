@@ -143,3 +143,5 @@ The core matched-comparison pipeline:
 ## License
 
 [MIT](https://github.com/tsilva/turbobench/blob/main/LICENSE)
+
+[MIT License](LICENSE).

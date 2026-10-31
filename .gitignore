@@ -11,3 +11,5 @@ htmlcov/
 turbobench-results/
 *.partial/
 _vizdoom.ini
+/INBOX.md
+/.local/repo-inbox/
