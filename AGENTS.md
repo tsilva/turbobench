@@ -1,9 +1,9 @@
 ## Product Specifications
 
-When specifications exist, use `$specs-author` for substantive work and
+When specifications exist, use `$private-skills_specs-author` for substantive work and
 specification changes. Follow its shared read/reuse cadence, provisional-scenario
 guidance, proportional detail, decision-based approval, and closing intent check.
-The maintained procedure is `/Users/tsilva/.codex/skills/private-skills/specs-author/SKILL.md`.
+The maintained procedure is `/Users/tsilva/.codex/skills/private-skills/private-skills_specs-author/SKILL.md`.
 
 ## Release Builds
 
@@ -18,8 +18,8 @@ showcases. Executable workflow documentation is in `docs/comparison-workflow.md`
 
 ## Shared release procedure
 
-The project `turbobench_build-release` skill composes `$release-workflow` from
-`/Users/tsilva/.codex/skills/release-workflow/SKILL.md`.
+The project `turbobench_build-release` skill composes `$private-skills_release-workflow` from
+`/Users/tsilva/.codex/skills/private-skills/private-skills_release-workflow/SKILL.md`.
 Read both for release work; keep project commands, version policy, artifact
 requirements, and approval gates in the project adapter.
 
